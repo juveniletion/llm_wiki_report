@@ -100,7 +100,32 @@ def _pct(cur: Optional[float], prev: Optional[float]) -> Optional[float]:
     return (cur - prev) / prev * 100.0
 
 
+# 行覆盖：让**季度/专题**分析能把"聚合后的合成行"喂进来，
+# 从而**复用本模块的全部推导逻辑**（环比 / 占比 / 贡献度 / 预算偏差…）。
+#
+# ⚠️ 为什么用覆盖而不是另写一套聚合推导：
+#    另写一套 = 两处口径，迟早漂移；而"环比""贡献度"这类算法
+#    一旦两处实现不同，报告之间就会出现**互相矛盾但各自合法**的数——
+#    本库最贵的一类错。覆盖机制让下游逻辑**只有一份**。
+_OVERRIDE: Optional[Dict[str, List[Dict[str, str]]]] = None
+
+
+def use_overrides(mapping: Optional[Dict[str, List[Dict[str, str]]]]) -> None:
+    """
+    临时替换若干 CSV 的读取结果。传 `None` 恢复读真实文件。
+
+    用法（季度分析）：
+        use_overrides({"csv/cost_data/中药一厂_成本汇总_2026年1-6月.csv": 合成行})
+        fs = build(product, month)
+        use_overrides(None)          # 用完必须恢复，否则污染后续调用
+    """
+    global _OVERRIDE
+    _OVERRIDE = mapping
+
+
 def _read(name: str) -> List[Dict[str, str]]:
+    if _OVERRIDE is not None and name in _OVERRIDE:
+        return _OVERRIDE[name]
     p = RAW / name
     if not p.exists():
         # ⚠️ 这里曾是 `raise SystemExit`。SystemExit 继承 BaseException，
@@ -248,8 +273,14 @@ def build(product: str, month: str) -> FactSet:
     ya = raw(m25, yago, "单位成本(元/盒)", F25, "")
     bv = raw(bud, budr, "预算单位成本(元/盒)", FB, "")
     if c is not None:
-        add("本月单位成本", Fact(c, _fmt(c), "元/盒",
-            _coord(F26, "单位成本(元/盒)", f"{product}&{month}"), F26))
+        # ⚠️ 覆写模式下（季度聚合）没有可指的 raw 列坐标——
+        #    这时 `coord` 留空、改给公式，如实说明"这是期间聚合值"。
+        #    硬编一个坐标等于**伪造溯源**，比留空更坏。
+        add("本月单位成本", Fact(
+            c, _fmt(c), "元/盒",
+            "" if _OVERRIDE is not None else _coord(F26, "单位成本(元/盒)", f"{product}&{month}"),
+            F26,
+            formula="总成本 ÷ 总产量（期间聚合）" if _OVERRIDE is not None else None))
     if p is not None:
         add("上月单位成本", Fact(p, _fmt(p), "元/盒",
             _coord(F26, "单位成本(元/盒)", f"{product}&{fs.prev_month}"), F26))

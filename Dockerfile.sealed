@@ -1,0 +1,64 @@
+#
+# pharma-cost-wiki —— **加密镜像（含真实数据）**，仅供赛事官方
+#
+# ⛔ 这个镜像里含赛题机密数据。三条硬纪律：
+#      1. 只交付给赛事官方（赛题明文允许的范围）
+#      2. **绝不推任何公开 registry**（DockerHub / GHCR / 网盘 / 转发）
+#      3. Docker 镜像层就是 tar 包，拿到的人 `docker save` 即可取出全部数据
+#
+# 设计：**从基础镜像派生**，只加数据
+# ---------------------------------
+# 基础镜像 `pharma-cost-wiki:latest` 由公开仓库的 `Dockerfile` 构建，
+# 里面已经有：系统依赖（中文字体 / pandoc / LaTeX）、Python 依赖、
+# 全部代码、空的数据目录、启动自举、健康检查、CMD。
+#
+# 本文件**只做一件事**：把真实数据 COPY 进去。
+#
+# 为什么不复制一份完整的 Dockerfile：
+#   那样两份文件会**漂移**——改了基础版忘了同步加密版，加密版就落后
+#   （比如少了新装的依赖）。派生写法下，改基础版会自动流到加密版。
+#
+# 构建（必须在**有真实数据的目录**里，即项目源码目录）
+# ---------------------------------------------------
+#   # 1) 先构建基础镜像（从公开仓库那套代码，零数据）
+#   docker build -t pharma-cost-wiki:latest .
+#
+#   # 2) 再派生加密镜像（把真实数据烤进去）
+#   docker build -f Dockerfile.sealed -t pharma-cost-wiki:sealed .
+#
+#   # 3) 导出成单个文件交付
+#   docker save pharma-cost-wiki:sealed -o pharma-cost-wiki-sealed.tar
+#
+# ⚠️ 第 1 步的 `.dockerignore` 会把 raw/ wiki/ 等排除出构建上下文——
+#    那是**基础镜像**该有的行为（零数据）。
+#    但 `Dockerfile.sealed` 需要读这些目录，所以第 2 步**必须**用一个
+#    不排除数据的 ignore 文件。否则 COPY 会失败（好事：失败比静默无数据强）。
+#    用脚本组装上下文可避免手抄：见 scripts/make_sealed_context.py
+
+FROM pharma-cost-wiki:latest
+
+# COPY 需要 root（运行用户是 wiki，故意不给它写权限）
+USER root
+
+# ---- 真实数据（这是本镜像存在的唯一理由）----
+# 顺序与基础镜像里 `RUN mkdir -p` 的一致，便于人工核对
+COPY raw/     ./raw/
+COPY wiki/    ./wiki/
+COPY state/   ./state/
+COPY graph/   ./graph/
+COPY reports/ ./reports/
+
+# ⚠️ 刻意**不**复制这些（不是"忘了"，是"不该"）：
+#   data/     运行时库：auth.db 是凭据、users/*.db 是隐私、knowledge.db 是派生物。
+#             启动时 CMD 会自动跑 db_build.py 重建 knowledge.db。
+#   exports/  导出产物，运行时生成。
+#   .index/   向量缓存，可再生。
+#
+# 也**不**复制 .env：密钥进镜像层就永久留在层里（后续层删不掉）。
+
+# 数据得让运行用户可读（COPY 进来默认属 root）
+RUN chown -R wiki:wiki /app/raw /app/wiki /app/state /app/graph /app/reports
+
+# 恢复非 root 运行。这两行必须写全：`FROM` 不带 USER，
+# 基础镜像设的 USER wiki 在 `USER root` 之后需要重新声明。
+USER wiki

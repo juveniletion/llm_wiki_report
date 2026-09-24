@@ -234,6 +234,42 @@ class Memory:
             c.execute("UPDATE conversations SET title = ?, updated_at = datetime('now') "
                       "WHERE id = ?", (title[:80], conv_id))
 
+    def owns_conversation(self, user_id: int, conv_id: int) -> bool:
+        """
+        这个会话属于该用户吗。
+
+        ⚠️ **所有"按 id 打开会话"的入口都必须先过这一关。**
+           `load()` / `get_context()` 只按 `conv_id` 查，**不验证归属**——
+           它们没有"当前用户是谁"的概念，本就不该由它们判。
+
+           跨用户虽被物理隔离挡住（一人一个 `data/users/<id>.db`），
+           但**同一用户库内有多个会话**：一旦新增"按 id 打开"的能力，
+           不校验就等于允许读到同库内任意会话。现在就把约束立对，
+           免得以后加多人共用库时才发现这个口子是敞的。
+        """
+        with self._conn() as c:
+            r = c.execute("SELECT 1 FROM conversations WHERE id = ? AND user_id = ?",
+                          (conv_id, user_id)).fetchone()
+            return r is not None
+
+    def delete_conversation(self, user_id: int, conv_id: int) -> bool:
+        """
+        删除一个会话及其全部消息。**先校验归属**；不属于该用户则什么都不做。
+
+        ⚠️ 显式删 `messages`，不依赖 `ON DELETE CASCADE`——理由同 `delete_user()`：
+           `PRAGMA foreign_keys` 是**连接级**开关，裸 `sqlite3.connect()` 下默认关，
+           级联不会生效，只删 conversations 会留下**孤儿消息行**
+           （占空间，且按 conv_id 查还能查到——看起来像"删了但没删干净"）。
+        """
+        with self._conn() as c:
+            r = c.execute("SELECT 1 FROM conversations WHERE id = ? AND user_id = ?",
+                          (conv_id, user_id)).fetchone()
+            if r is None:
+                return False
+            c.execute("DELETE FROM messages WHERE conversation_id = ?", (conv_id,))
+            c.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
+            return True
+
     # ---- 消息 ---------------------------------------------------------
     def append(self, conv_id: int, role: str, content: str = "",
                tool_name: str = "", tool_args: Any = None,

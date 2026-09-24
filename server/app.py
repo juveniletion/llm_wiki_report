@@ -186,6 +186,36 @@ def trend(product: str = Query(...), months: int = Query(6, ge=1, le=24)) -> Dic
                 for r in rows]}
 
 
+@app.get("/api/forecast", summary="成本趋势预测（加分项）")
+def forecast_api(product: str = Query(...), horizon: int = Query(2, ge=1, le=6),
+                 authorization: str = Header(default=""),
+                 lw_sid: str = Cookie(default="")) -> Dict[str, Any]:
+    """
+    下月/未来数月单位成本预测（Holt 线性趋势）。
+
+    ⚠️ **预测值不是"事实"**：它没有 raw 坐标、`check_math` 复算不了它。
+       所以本接口的返回里**显式带 `warnings` 与 `trustworthy`**，
+       前端必须把它们显示出来——一个孤零零的"下月 11.17 元/盒"
+       会被当成承诺读，而它不是。
+
+    本端点只读，不需要登录（与其余看板数据一致）。
+    """
+    import forecast as FC
+    fc = FC.forecast(product, horizon)
+    return {
+        "product": fc.product,
+        "n_samples": fc.n_samples,
+        "rmse": round(fc.rmse, 4),
+        "alpha": fc.alpha, "beta": fc.beta,
+        "trustworthy": fc.trustworthy,
+        "history": [{"月份": m, "单位成本": v} for m, v in fc.history],
+        "predictions": fc.predictions,
+        "warnings": fc.warnings,
+        # 让前端不必自己拼这句话——口径统一由服务端给
+        "method": "Holt 线性趋势（非季节性模型）",
+    }
+
+
 # ---------------------------------------------------------------------------
 # 冲突登记表 —— 解析全库 Status 块
 # ---------------------------------------------------------------------------
@@ -963,18 +993,25 @@ from pydantic import BaseModel  # noqa: E402
 class ChatIn(BaseModel):
     question: str
     new: bool = False
+    # 指定在哪个会话里继续（多会话切换）。**归属由服务端校验**：
+    # 客户端只能"说出一个 id"，不能决定它属不属于自己。
+    conversation_id: Optional[int] = None
     # ⚠️ 这里**故意没有 `user` 字段**。
     #    身份只能来自 Authorization 头，客户端无权自报。
     #    （旧版有 `user: str = "web"`，那是身份冒充的入口。）
 
 
-def _session(user: str, new: bool = False):
+def _session(user: str, new: bool = False,
+             conversation_id: Optional[int] = None):
     """
     打开某用户的会话。
 
     ⚠️ 必须把**个人工作区**传下去。不传的话，AgentSession 只会读共享基线：
        用户上传的资料能编译进他的工作区，但**问答时检索不到**——
        上传功能实际是白做的。（这是本函数此前的真实缺陷。）
+
+    `conversation_id` 指定切换到哪个已有会话。**先在这里验归属**，
+    不通过直接 404——不把这个判断推给运行时，因为它不持有鉴权上下文。
     """
     import agent_runtime
     import paths
@@ -983,8 +1020,17 @@ def _session(user: str, new: bool = False):
     #    用户上传就能写进共享基线（越权）。这里显式拦一道。
     if Path(ws).resolve() == Path(WIKI_ROOT).resolve():
         raise HTTPException(500, "配置错误：个人工作区与共享基线指向同一目录")
+
+    if conversation_id is not None:
+        # 归属校验放在鉴权边界（这一层），与其余端点一致：不通过就是 404
+        s = agent_runtime.AgentSession.open(
+            user, root=WIKI_ROOT, personal=ws, new=new)
+        if not s.mem.owns_conversation(s.user_id, conversation_id):
+            raise HTTPException(404, f"会话不存在：{conversation_id}")
+
     return agent_runtime.AgentSession.open(
-        user, root=WIKI_ROOT, personal=ws, new=new)
+        user, root=WIKI_ROOT, personal=ws, new=new,
+        conversation_id=conversation_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1316,6 +1362,87 @@ def chat_history(authorization: str = Header(default=""),
             "prefs": s.mem.all_prefs(s.user_id)}
 
 
+# ---------------------------------------------------------------------------
+# 会话管理（多会话：新建 / 切换 / 删除）
+# ---------------------------------------------------------------------------
+# ⚠️ **每个按 id 操作的端点都必须先校验归属**（`mem.owns_conversation`）。
+#    跨用户读不到别人的数据是靠"一人一个物理库文件"挡住的，但**同一用户库内
+#    有多个会话**——不校验归属，前端传一个别的 conv_id 就能读到同库内其他会话。
+#
+#    校验不过一律返回 **404 而不是 403**：403 等于告诉对方"这个 id 存在，
+#    只是不属于你"，那是信息泄露（能据此枚举出别人有哪些会话 id）。
+#    对调用方而言，"不存在"与"不是你的"应当是**同一种回答**。
+
+def _conv_guard(info: Dict[str, Any], cid: int):
+    """取某个会话，**先验归属**。不通过 → 404（见上方说明）。"""
+    s = _session(info["external_id"])
+    if not s.mem.owns_conversation(s.user_id, cid):
+        raise HTTPException(404, f"会话不存在：{cid}")
+    return s
+
+
+@app.get("/api/conversations", summary="当前用户的会话列表")
+def conversations_list(authorization: str = Header(default=""),
+                       lw_sid: str = Cookie(default="")) -> Dict[str, Any]:
+    """只列会话本身，**不含消息**——列表要轻，消息在切进去时才拉。"""
+    info = _whoami(authorization, lw_sid)
+    s = _session(info["external_id"])
+    return {"conversation_id": s.conv_id,        # 当前活跃的那个，前端用来选中
+            "conversations": s.mem.list_conversations(s.user_id, limit=100)}
+
+
+class ConvIn(BaseModel):
+    title: str = ""
+
+
+@app.post("/api/conversations", summary="新建会话")
+def conversations_new(body: ConvIn = ConvIn(),
+                      authorization: str = Header(default=""),
+                      lw_sid: str = Cookie(default="")) -> Dict[str, Any]:
+    """
+    显式新建一个会话。
+
+    ⚠️ 前端**通常在首次提问时**才建（带 `new: true` 走 `/api/chat`），
+       而不是点"新对话"按钮就建——否则用户点开看看又关掉，会攒一堆空会话。
+       这个端点留给"想先建好再慢慢问"的场景，以及脚本/自动化。
+    """
+    info = _whoami(authorization, lw_sid)
+    s = _session(info["external_id"])
+    cid = s.mem.new_conversation(s.user_id, title=(body.title or "").strip()[:80])
+    return {"conversation_id": cid}
+
+
+@app.get("/api/conversations/{cid}", summary="取指定会话的消息与摘要")
+def conversations_get(cid: int,
+                      authorization: str = Header(default=""),
+                      lw_sid: str = Cookie(default="")) -> Dict[str, Any]:
+    """切进某个会话时拉它的消息与压缩摘要。**先验归属。**"""
+    info = _whoami(authorization, lw_sid)
+    s = _conv_guard(info, cid)
+    ctx = s.mem.get_context(cid)
+    return {"conversation_id": cid,
+            "messages": s.mem.load(cid),
+            "summary": ctx.get("summary", ""),
+            "summary_upto": ctx.get("summary_upto", 0),
+            "compactions": ctx.get("compactions", 0)}
+
+
+@app.delete("/api/conversations/{cid}", summary="删除会话")
+def conversations_delete(cid: int,
+                         authorization: str = Header(default=""),
+                         lw_sid: str = Cookie(default="")) -> Dict[str, Any]:
+    """
+    删除一个会话及其全部消息。**先验归属**（写操作，走 CSRF 中间件）。
+
+    ⚠️ 消息由 `mem.delete_conversation()` 显式删除，不依赖外键级联——
+       `PRAGMA foreign_keys` 是连接级开关，裸连接下默认关。
+    """
+    info = _whoami(authorization, lw_sid)
+    s = _conv_guard(info, cid)
+    ok = s.mem.delete_conversation(s.user_id, cid)
+    return {"deleted": bool(ok), "conversation_id": cid}
+
+
 @app.post("/api/chat", summary="智能问答（SSE 流式）")
 def chat(body: ChatIn, authorization: str = Header(default=""), lw_sid: str = Cookie(default="")) -> StreamingResponse:
     """
@@ -1330,7 +1457,19 @@ def chat(body: ChatIn, authorization: str = Header(default=""), lw_sid: str = Co
 
     def gen():
         try:
-            s = _session(info["external_id"], new=body.new)
+            s = _session(info["external_id"], new=body.new,
+                         conversation_id=body.conversation_id)
+            # 首轮提问时给会话起个能认出来的名字（纯脚本截取，不调 LLM）。
+            # 只改仍是默认名的会话——用户/之前已命名过的不动。
+            try:
+                cur = [c for c in s.mem.list_conversations(s.user_id, limit=100)
+                       if c["id"] == s.conv_id]
+                if cur and (cur[0].get("title") or "") in ("", "成本分析问答"):
+                    t = " ".join(body.question.split())[:24]
+                    if t:
+                        s.mem.set_title(s.conv_id, t)
+            except Exception:  # noqa: BLE001
+                pass          # 起标题失败不该影响问答本身
             for ev in s.chat(body.question):
                 yield f"data: {_json.dumps(ev, ensure_ascii=False)}\n\n"
         except Exception as e:  # noqa: BLE001
@@ -1588,6 +1727,86 @@ class ExportIn(BaseModel):
     fmt: str = "both"         # docx | pdf | both
     title: str = ""
     charts: bool = False      # 是否重绘并嵌入图表（赛题 5.1.3「图表嵌入」）
+
+
+class GenerateIn(BaseModel):
+    """
+    按**分析主题**生成报告（赛题 5.1.3 的核心交互）。
+
+        theme  monthly   月度成本分析 —— `period` 忽略，用 `month`
+               quarterly 季度成本分析 —— `period` 形如 `2026-Q2`
+               topic     专题分析     —— `period` 是要素名（直接材料/…）
+
+    ⚠️ 生成会调用大模型写叙述段，故**必须登录**（与导出不同）：
+       导出只读已有文件，生成要花 token。
+    """
+    product: str
+    month: str = "2026-06"
+    theme: str = "monthly"
+    period: str = ""
+
+
+@app.get("/api/themes", summary="可选的分析主题")
+def themes() -> Dict[str, Any]:
+    """供前端渲染主题选择器——**选项由服务端给**，不在前端硬编。"""
+    import period_agg as PA
+    import report_build as RB
+    return {
+        "themes": [{"id": t, "name": RB.THEME_ZH[t],
+                    "period_label": {"monthly": "分析月份",
+                                     "quarterly": "分析季度",
+                                     "topic": "专题对象"}[t],
+                    "period_options": (
+                        PA.AVAILABLE_QUARTERS if t == "quarterly"
+                        else (RB.TOPIC_ELEMENTS if t == "topic" else []))}
+                   for t in ("monthly", "quarterly", "topic")],
+    }
+
+
+@app.post("/api/control/generate", summary="按分析主题生成报告")
+def control_generate(body: GenerateIn,
+                     authorization: str = Header(default=""),
+                     lw_sid: str = Cookie(default="")) -> Dict[str, Any]:
+    """
+    生成一份报告（不调 LLM 之外的副作用；产物落在 `reports/`）。
+
+    ⚠️ **必须登录**：生成要用大模型，是花钱的操作。导出（只读已有文件）
+       才允许免登录到那个程度——两者成本不同，权限也不该一样。
+    """
+    info = _whoami(authorization, lw_sid)
+    if body.theme not in ("monthly", "quarterly", "topic"):
+        raise HTTPException(400, f"未知分析主题：{body.theme}")
+    import period_agg as PA
+
+    if body.theme == "quarterly":
+        q = body.period or _quarter_of_month(body.month)
+        if q not in PA.AVAILABLE_QUARTERS:
+            raise HTTPException(400, f"该季度无数据：{q}（可选 {PA.AVAILABLE_QUARTERS}）")
+        out_name = f"{body.product}_{q}.md"
+    elif body.theme == "topic":
+        if not body.period:
+            raise HTTPException(400, "专题分析需要指定对象（如「直接材料」）")
+        out_name = f"{body.product}_{body.month}_专题{body.period}.md"
+    else:
+        out_name = f"{body.product}_{body.month}.md"
+
+    import report_build as RB
+    try:
+        r = RB.build(body.product, body.month, use_llm=True, verbose=False,
+                     theme=body.theme, period=body.period)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"生成失败：{type(e).__name__}: {e}")
+
+    out = REPORTS / out_name
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(r["report"], encoding="utf-8", newline="\n")
+    return {"ok": True, "file": out_name, "theme": body.theme,
+            "stats": r["stats"]}
+
+
+def _quarter_of_month(month: str) -> str:
+    y, m = int(month[:4]), int(month[5:7])
+    return f"{y}-Q{(m - 1) // 3 + 1}"
 
 
 @app.get("/api/control/exports", summary="可导出的文档清单")

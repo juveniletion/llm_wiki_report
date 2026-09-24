@@ -182,12 +182,23 @@ class AgentSession:
     def open(cls, external_id: str = "cli", root: Optional[Path] = None,
              model: Optional[str] = None, new: bool = False,
              title: str = "", db: Optional[str] = None,
-             personal: Optional[Path] = None) -> "AgentSession":
+             personal: Optional[Path] = None,
+             conversation_id: Optional[int] = None) -> "AgentSession":
         """
         打开某个用户的会话。
 
         ⚠️ 记忆落在**该用户自己的库**（`data/users/<id>.db`）——
            不同用户的对话物理隔离在不同文件里，读到别人的数据在文件层面不可能发生。
+
+        `conversation_id` 指定在**哪个会话里继续**（多会话切换用）。
+           ⚠️ **归属仍在这里再验一次**（防御性）：本类只认 `external_id`，
+              接口层必须**先校验再传进来**；但"打开会话"这一步会写库，
+              在这里多验一道成本极低、漏一次代价很大。
+           ⚠️ 指定了但不属于该用户（或不存在）→ **直接 raise，不静默回退**。
+              第一版写成了"落回最近会话"，实测发现那等于**把用户的问题
+              悄悄写进另一个会话**——他不知道、也不报错，是典型静默错误。
+              接口层会先校验并返回 404，所以这条路径只在编程误用时触发；
+              既然只在误用时触发，就该响，不该猜。
 
         `personal` 是该用户的**个人工作区**（`data/users/<id>/ws`）。
            给了它，检索范围 = 公司共享基线 + 他自己的资料（个人同名覆盖共享）。
@@ -204,7 +215,16 @@ class AgentSession:
         #    不报任何错，只有翻磁盘才发现。
         mem = Memory(db_path=db) if db else Memory(external_id)
         uid = mem.ensure_user(external_id, name=external_id)
-        cid = None if new else mem.active_conversation(uid, kind="chat")
+        # 优先级：显式指定的会话 > 强制新建 > 最近会话 > 新建
+        cid: Optional[int] = None
+        if conversation_id is not None:
+            # 指定了就必须给对：宁可响，不要猜（见 docstring）
+            if not mem.owns_conversation(uid, conversation_id):
+                raise ValueError(
+                    f"会话 {conversation_id} 不存在或不属于 {external_id}")
+            cid = conversation_id
+        if cid is None:
+            cid = None if new else mem.active_conversation(uid, kind="chat")
         if cid is None:
             cid = mem.new_conversation(uid, title=title or "成本分析问答")
         return cls(mem, cid, uid, Path(root or DEFAULT_ROOT),

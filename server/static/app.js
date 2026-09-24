@@ -245,7 +245,25 @@ function LoginPage({ onAuthed, onGuest, notice = "" }) {
  * 数据走 `/api/profile` **一次取回**（避免开页三个请求，任一慢就半残）。
  * ========================================================================== */
 function Profile({ me, onAuthed, onLoggedOut }) {
-  const { data, loading, error } = useApi("/api/profile");
+  /* 用 path 上挂一个自增 key 来触发重新拉取——`useApi` 的 useEffect
+   * 依赖 `path`，换个字符串就会重跑，不必给它加 refresh API。 */
+  const [tick, setTick] = useState(0);
+  const { data, loading, error } = useApi(`/api/profile?t=${tick}`);
+
+  /* 打开某个会话：跳回首页并选中它。
+   * ⚠️ 不改「首页」组件的内部 state（那是 HeroAsk 的私有状态），
+   *    而是把目标会话 id 写进 hash query，由 HeroAsk 读进来。
+   *    这样两个组件不必互相持有对方的 setter。 */
+  const openConv = (id) => {
+    location.hash = `home?conv=${id}`;
+  };
+
+  const delConv = async (id) => {
+    if (!window.confirm("删除这个对话？该对话的所有消息会一并删除，不可恢复。")) return;
+    const r = await api(`/api/conversations/${id}`, { method: "DELETE" });
+    if (r._error) return;
+    setTick(t => t + 1);     // 重新拉 profile，刷新列表
+  };
 
   if (!me) {
     return html`<div class="card">
@@ -295,8 +313,17 @@ function Profile({ me, onAuthed, onLoggedOut }) {
           <table class="tbl">
             <thead><tr><th>会话</th><th>建立时间</th></tr></thead>
             <tbody>${convs.map(c => html`<tr key=${c.id}>
-              <td>${c.title}</td>
+              <td>${c.title || "未命名"}</td>
               <td class="nowrap">${String(c.created_at).slice(0, 19)}</td>
+              <td class="nowrap">${c.n_msg || 0} 条</td>
+              <td class="nowrap">
+                <button class="chip" type="button"
+                        onClick=${() => openConv(c.id)}
+                        title="在首页打开这个对话">打开</button>
+                <button class="chip" type="button"
+                        onClick=${() => delConv(c.id)}
+                        title="删除这个对话">删除</button>
+              </td>
             </tr>`)}</tbody>
           </table>`
         : html`<div class="empty">
@@ -1688,21 +1715,62 @@ function HeroAsk({ me, onNeedLogin, onAuthed }) {
   const [meta, setMeta] = useState(null);
   const [showTrace, setShowTrace] = useState({});
   const boxRef = useRef(null);
+  /* 多会话：当前会话 id 与列表。
+   * ⚠️ `convId === null` 表示**尚未落库的新对话**——用户点了"新对话"但还没提问。
+   *    这时不建会话（否则点开看看又关掉会攒一堆空的），
+   *    首次提问时带 `new: true` 让后端建。 */
+  const [convId, setConvId] = useState(null);
+  const [convs, setConvs] = useState([]);
+
+  /* 从 URL 里取「要打开哪个会话」——个人中心点「打开」时写进来的。
+   * 读后即清，避免刷新页面时又跳一次。 */
+  const takePendingConv = () => {
+    const m = (location.hash || "").match(/[?&]conv=(\d+)/);
+    if (!m) return null;
+    history.replaceState(null, "", location.pathname + "#home");
+    return Number(m[1]);
+  };
 
   /* 登录态变化时拉自己的历史。
    * ⚠️ `me` 由 Home 统一持有，本组件**不自己去读凭证**——
    *    上一版三个组件各自读 localStorage，结果是"三个真相源"：
    *    在对话区登录了，上传区还不知道。 */
   useEffect(() => {
-    if (!me) { setMsgs([]); setMeta(null); return; }
+    if (!me) { setMsgs([]); setMeta(null); setConvs([]); setConvId(null); return; }
     let alive = true;
-    api("/api/chat/history").then(d => {
-      if (!alive || d._error) return;
+
+    const apply = (d) => {
       setMeta({ summary: d.summary, compactions: d.compactions });
       setMsgs((d.messages || [])
         .filter(m => m.role === "user" || m.role === "assistant")
         .map(m => ({ role: m.role === "user" ? "me" : "ai",
                      content: m.content, steps: [] })));
+    };
+
+    // 个人中心指定了要打开某个会话 → 打开它；否则续最近一个
+    const wanted = takePendingConv();
+    const p = wanted != null
+      ? api(`/api/conversations/${wanted}`)
+      : api("/api/chat/history");
+
+    p.then(d => {
+      if (!alive || d._error) {
+        // 指定的会话打不开（被删了？）→ 退回"续最近"
+        if (wanted != null) {
+          api("/api/chat/history").then(h => {
+            if (!alive || h._error) return;
+            apply(h); setConvId(h.conversation_id || null);
+            setConvs(h.conversations || []);
+          });
+        }
+        return;
+      }
+      apply(d);
+      setConvId(wanted != null ? wanted : (d.conversation_id || null));
+      // 列表仍从统一的端点取（指定会话时响应里没有列表）
+      api("/api/conversations").then(c => {
+        if (alive && !c._error) setConvs(c.conversations || []);
+      });
     });
     return () => { alive = false; };
   }, [me]);
@@ -1711,6 +1779,43 @@ function HeroAsk({ me, onNeedLogin, onAuthed }) {
     const b = boxRef.current;
     if (b) b.scrollTop = b.scrollHeight;
   }, [msgs]);
+
+  /* 切到另一个会话：整体替换消息与摘要。
+   * ⚠️ 必须**整体替换**而不是追加——追加会把上一个会话的内容混进来，
+   *    那正是"上下文不隔离"的表现。同时复位 steps/typing 等瞬态。 */
+  const switchConv = async (id) => {
+    if (busy || id === convId) return;
+    const d = await api(`/api/conversations/${id}`);
+    if (d._error) return;
+    setConvId(id);
+    setMeta({ summary: d.summary, compactions: d.compactions });
+    setShowTrace({});
+    setMsgs((d.messages || [])
+      .filter(m => m.role === "user" || m.role === "assistant")
+      .map(m => ({ role: m.role === "user" ? "me" : "ai",
+                   content: m.content, steps: [] })));
+  };
+
+  /* 开一个新对话：只清空界面，**不落后端**（见 convId 的说明）。 */
+  const newConv = () => {
+    if (busy) return;
+    setConvId(null);
+    setMsgs([]);
+    setMeta(null);
+    setShowTrace({});
+    setInput("");
+  };
+
+  const deleteConv = async (id, e) => {
+    e.stopPropagation();
+    if (busy) return;
+    if (!window.confirm("删除这个对话？该对话的所有消息会一并删除，不可恢复。")) return;
+    const r = await api(`/api/conversations/${id}`, { method: "DELETE" });
+    if (r._error) return;
+    const rest = convs.filter(c => c.id !== id);
+    setConvs(rest);
+    if (id === convId) newConv();     // 删的是当前会话 → 复位成"新对话"
+  };
 
   const ask = async (q) => {
     q = (q || "").trim();
@@ -1731,7 +1836,13 @@ function HeroAsk({ me, onNeedLogin, onAuthed }) {
         method: "POST",
         credentials: "same-origin",
         headers: writeHeaders(),
-        body: JSON.stringify({ question: q }),   // 无 user 字段：身份由会话决定
+        /* 带上当前会话：
+         *   convId 有值 → 在这个会话里继续
+         *   convId 为 null（刚点过"新对话"）→ new:true，让后端建一个
+         * ⚠️ 仍然**不带 user 字段**：身份只能由服务端从凭证判定。 */
+        body: JSON.stringify(convId != null
+          ? { question: q, conversation_id: convId }
+          : { question: q, new: true }),
       });
       if (res.status === 401) {
         patch(t => { t.err = "登录已过期，请重新登录。"; });
@@ -1781,6 +1892,15 @@ function HeroAsk({ me, onNeedLogin, onAuthed }) {
      * 停在纯文本样式。宁可显示成已结束，也不要卡在假的"进行中"。 */
     patch(t => t.steps.forEach(s => { if (s.state === "run") s.state = "bad"; }));
     setBusy(false);
+    /* 本轮结束后刷新会话列表：
+     * "新对话"的首轮提问会让后端**新建**一个会话（并对它起标题），
+     * 这里把新 id 与列表同步过来——否则下拉里看不到刚建的会话，
+     * 下次提问又会带 new:true 再造一个。 */
+    api("/api/conversations").then(d => {
+      if (d._error) return;
+      setConvs(d.conversations || []);
+      if (convId == null && d.conversation_id != null) setConvId(d.conversation_id);
+    });
   };
 
   const SUGGEST = [
@@ -1803,6 +1923,24 @@ function HeroAsk({ me, onNeedLogin, onAuthed }) {
     <section class="hero">
       <h1 class="hero-title">制药成本分析</h1>
       <p class="hero-sub">问一句，每个数字都带你回到它的出处。</p>
+
+      <div class="conv-bar">
+        <span class="conv-label">会话</span>
+        <select class="conv-select" value=${convId == null ? "" : String(convId)}
+                disabled=${busy}
+                onChange=${e => { const v = e.target.value; if (v) switchConv(Number(v)); }}>
+          <option value="">新对话（尚未提问）</option>
+          ${convs.map(c => html`<option key=${c.id} value=${String(c.id)}>
+            ${(c.title || "未命名")}${c.n_msg ? `（${c.n_msg}）` : ""}
+          </option>`)}
+        </select>
+        <button class="conv-new" type="button" disabled=${busy} onClick=${newConv}
+                title="开一个新对话。不同对话的上下文互相隔离。">+ 新对话</button>
+        ${convId != null ? html`
+          <button class="conv-del" type="button" disabled=${busy}
+                  title="删除当前会话"
+                  onClick=${e => deleteConv(convId, e)}>删除</button>` : null}
+      </div>
 
       <form class="askbar" onSubmit=${e => { e.preventDefault(); ask(input); }}>
         <span class="askbar-icon">💬</span>
@@ -2074,6 +2212,100 @@ function WorkspaceList({ me, refreshKey }) {
 
 
 /* 导出文档 —— 视觉上降为次要，放在上传区之后 */
+/* =============================================================================
+ * 按分析主题生成报告（赛题 5.1.3）
+ *
+ * 赛题原文：「根据用户选择的分析主题（**月度/季度/专题**）、分析月份、
+ * 目标产品，自动生成完整报告」——所以这三个选择项是**硬要求**，
+ * 且必须能从前端选，而不是只在命令行支持。
+ *
+ * ⚠️ 主题与可选期间**由服务端 /api/themes 给**，不在前端硬编：
+ *    季度可选哪些、专题能选哪些要素，取决于数据集里有什么；
+ *    前端硬编一份清单，加数据时就会悄悄不同步。
+ * ========================================================================== */
+function ReportGen({ me, onGenerated }) {
+  const { data: prod } = useApi("/api/products");
+  const { data: th } = useApi("/api/themes");
+  const [product, setProduct] = useState("银黄口服液");
+  const [month, setMonth] = useState("2026-06");
+  const [theme, setTheme] = useState("monthly");
+  const [period, setPeriod] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  const MONTHS = ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"];
+  const t = ((th && th.themes) || []).find(x => x.id === theme) || {};
+  const opts = t.period_options || [];
+
+  useEffect(() => {
+    const l = prod && prod.products;
+    if (l && l.length && !l.includes(product)) setProduct(l[0]);
+  }, [prod]);
+  // 切主题时重置期间为该项的第一个可选项
+  useEffect(() => {
+    setPeriod(opts.length ? opts[0] : "");
+    // eslint-disable-next-line
+  }, [theme, th]);
+
+  const gen = async () => {
+    setBusy(true); setMsg(""); setErr("");
+    try {
+      const r = await api("/api/control/generate", {
+        method: "POST",
+        body: { product, month, theme, period },
+      });
+      if (r._error) throw new Error(r._error);
+      setMsg(`已生成 ${r.file}（${r.stats.deterministic_fields} 个确定性值）`);
+      onGenerated && onGenerated();
+    } catch (e) { setErr("生成失败：" + String(e.message || e)); }
+    setBusy(false);
+  };
+
+  if (!me) return null;      // 生成要花 token，未登录不显示入口
+
+  return html`
+    <details class="wsbox" open>
+      <summary>按主题生成报告 <span class="hint">月度 / 季度 / 专题</span></summary>
+      <p class="sec-sub" style=${{ marginTop: 12 }}>
+        选择分析主题、期间与产品，系统自动生成完整报告（数字由脚本算，
+        叙述由大模型写）。生成后可到下方「导出文档」转成 Word / PDF。
+      </p>
+      <div class="toolbar" style=${{ flexWrap: "wrap", gap: 10 }}>
+        <label>分析主题</label>
+        <select value=${theme} onChange=${e => setTheme(e.target.value)}>
+          ${((th && th.themes) || []).map(x => html`
+            <option key=${x.id} value=${x.id}>${x.name}</option>`)}
+        </select>
+
+        ${theme === "monthly" ? html`
+          <label>分析月份</label>
+          <select value=${month} onChange=${e => setMonth(e.target.value)}>
+            ${MONTHS.map(m => html`<option key=${m} value=${m}>${m}</option>`)}
+          </select>` : null}
+
+        ${opts.length ? html`
+          <label>${t.period_label || "期间"}</label>
+          <select value=${period} onChange=${e => setPeriod(e.target.value)}>
+            ${opts.map(o => html`<option key=${o} value=${o}>${o}</option>`)}
+          </select>` : null}
+
+        <label>产品</label>
+        <select value=${product} onChange=${e => setProduct(e.target.value)}>
+          ${((prod && prod.products) || []).map(p => html`
+            <option key=${p} value=${p}>${p}</option>`)}
+        </select>
+
+        <button class="chip" type="button" disabled=${busy} onClick=${gen}>
+          ${busy ? "生成中…（要调大模型，约 10-30 秒）" : "生成报告"}
+        </button>
+      </div>
+      ${msg ? html`<div class="alert ok" style=${{ marginTop: 10 }}>✅ ${msg}</div>` : null}
+      ${err ? html`<div class="alert" style=${{ marginTop: 10 }}>${err}</div>` : null}
+    </details>`;
+}
+
+
 function ExportBar({ me }) {
   const [docs, setDocs] = useState(null);
   const [busy, setBusy] = useState("");
@@ -2116,6 +2348,9 @@ function ExportBar({ me }) {
                                onGoLogin=${() => (location.hash = "login")} />`;
 
   return html`
+    <${ReportGen} me=${me} onGenerated=${() =>
+      api("/api/control/exports").then(d => { if (!d._error) setDocs(d); })} />
+
     <details class="wsbox">
       <summary>导出文档 <span class="hint">Word / PDF</span></summary>
       <p class="sec-sub" style=${{ marginTop: 12 }}>
@@ -2293,6 +2528,90 @@ function HomeCharts({ month, setMonth }) {
 }
 
 /* 热力图（赛题 5.2.2 可选加分项）—— 产品 × 月份 × 成本要素 */
+/* =============================================================================
+ * 成本趋势预测（赛题 6.2 加分项）
+ *
+ * ⚠️ 这个卡片与前后的图表性质**不同**，视觉上必须能区分开：
+ *    其它卡片的数字都来自 raw、能复算；这里的数字是**外推**，没有坐标。
+ *    一个孤零零的「下月 11.17 元/盒」会被当成承诺读——所以：
+ *      · 标题与卡片带「预测 / 外推」标识
+ *      · **永远显示区间**，不给单点值
+ *      · 服务端给的 warnings 原样显示（样本量不足等）
+ * ========================================================================== */
+function HomeForecast() {
+  const { data: prod } = useApi("/api/products");
+  const [product, setProduct] = useState("");
+  useEffect(() => {
+    const l = prod && prod.products;
+    if (l && l.length && !product) setProduct(l[0]);
+  }, [prod, product]);
+
+  const q = product
+    ? `/api/forecast?product=${encodeURIComponent(product)}&horizon=2` : "";
+  const { data, loading, error } = useApi(q || "/api/products");
+
+  if (!product || loading) return html`<section class="home-sec"><${Loading} /></section>`;
+  if (error) return html`<section class="home-sec"><${ErrorBox} msg=${error} /></section>`;
+  if (!data || !data.predictions || !data.predictions.length) return null;
+
+  const last = data.history[data.history.length - 1];
+  const p1 = data.predictions[0];
+  const chg = last ? (p1.预测值 - last.单位成本) : 0;
+
+  return html`
+    <section class="home-sec">
+      <div class="card fc-card">
+        <h2>成本趋势预测
+          <span class="fc-tag">外推</span>
+          <span class="hint">${data.method}　·　样本 ${data.n_samples} 个点</span>
+        </h2>
+        <p class="card-sub">
+          基于历史单位成本外推，<strong>不是已发生的数</strong>——
+          预测值没有原始坐标，与看板其余数字的性质不同，请连同区间一起读。
+        </p>
+
+        <div class="toolbar" style=${{ marginBottom: 16 }}>
+          <label>产品</label>
+          <select value=${product} onChange=${e => setProduct(e.target.value)}>
+            ${((prod && prod.products) || []).map(p => html`
+              <option key=${p} value=${p}>${p}</option>`)}
+          </select>
+        </div>
+
+        <table class="tbl">
+          <thead><tr>
+            <th>月份</th><th class="num">预测值（元/盒）</th>
+            <th class="num">参考区间</th><th>相对上月实际</th>
+          </tr></thead>
+          <tbody>
+            <tr>
+              <td>${last.月份}<span class="hint">（实际）</span></td>
+              <td class="num">${fmt(last.单位成本)}</td>
+              <td class="num">—</td><td>—</td>
+            </tr>
+            ${data.predictions.map(p => html`
+              <tr key=${p.月份}>
+                <td>${p.月份}</td>
+                <td class="num strong">${fmt(p.预测值)}</td>
+                <td class="num">${fmt(p.下限)} ~ ${fmt(p.上限)}</td>
+                <td class=${cls(p.步长 === 1 ? chg : (p.预测值 - last.单位成本))}>
+                  ${p.步长 === 1 && last
+                    ? `${ARROW(chg)} ${(chg / last.单位成本 * 100).toFixed(2)}%`
+                    : "—"}
+                </td>
+              </tr>`)}
+          </tbody>
+        </table>
+
+        ${(data.warnings || []).length ? html`
+          <div class="fc-warn">
+            ${data.warnings.map((w, i) => html`<div key=${i}>⚠️ ${w}</div>`)}
+          </div>` : null}
+      </div>
+    </section>`;
+}
+
+
 function HomeHeatmap() {
   const { data, loading, error } = useApi("/api/heatmap");
   const [el, setEl] = useState("单位材料");
@@ -2433,6 +2752,7 @@ function Home({ me, onNeedLogin, onAuthed }) {
     <${Reveal}><${DecideCard} /><//>
     <${Reveal}><${HomeCharts} month=${month} setMonth=${setMonth} /><//>
     <${Reveal}><${HomeHeatmap} /><//>
+    <${Reveal}><${HomeForecast} /><//>
     <${Reveal}><${HomeGraph} /><//>`;
 }
 /* =============================================================================
@@ -2461,6 +2781,10 @@ const TAB_ALIAS = { overview: "home", chat: "home", panel: "home" };
 function useHashTab() {
   const read = () => {
     let h = (location.hash || "").replace(/^#/, "");
+    // 允许多带一个查询串（如 `home?conv=3`）：个人中心的「打开会话」靠它
+    // 把目标会话传给首页。**先剥掉 `?…` 再匹配页签**，否则
+    // `home?conv=3` 匹配不上任何 id，虽然会回落到 home，但参数就丢了。
+    h = h.split("?")[0];
     h = TAB_ALIAS[h] || h;
     return TABS.some(t => t.id === h) ? h : "home";
   };

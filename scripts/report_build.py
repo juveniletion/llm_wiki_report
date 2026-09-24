@@ -57,6 +57,18 @@ WIKI_ROOT = HERE.parent
 TEMPLATE = WIKI_ROOT / "raw/templates/月度成本分析报告模板.md"
 OUT_DIR = WIKI_ROOT / "reports"
 
+# 三种分析主题（赛题 5.1.3）各自的模板。
+# ⚠️ 季度/专题**必须用独立模板**，不能套月度那份：
+#    月度模板里有 22 处「本月」，季度报告直接套用会把季度合计
+#    标成"本月"——**标签撒谎**，数字对但读起来是错的。
+TEMPLATES = {
+    "monthly": TEMPLATE,
+    "quarterly": WIKI_ROOT / "raw/templates/季度成本分析报告模板.md",
+    "topic": WIKI_ROOT / "raw/templates/专题分析报告模板.md",
+}
+THEME_ZH = {"monthly": "月度成本分析", "quarterly": "季度成本分析",
+            "topic": "专题分析"}
+
 PRODUCT_CODE = {"银黄口服液": "YH", "板蓝根颗粒": "BLG", "六味地黄胶囊": "LWD"}
 PRODUCT_SPEC = {"银黄口服液": "10ml×10支/盒", "板蓝根颗粒": "10g×20袋/盒",
                 "六味地黄胶囊": "0.3g×60粒/盒"}
@@ -114,6 +126,16 @@ LLM_SCALAR_FIELDS = {
     "本月亮点": "60-100 字。成本管理上值得肯定的地方（数据支撑）。",
     "需关注问题": "80-140 字。最需要管理层关注的问题，按严重度排序。",
 }
+# 专题分析专用的 LLM 字段。**只在 topic 主题下请求**——
+# 月度/季度报告没有这些占位符，白写会浪费 token 且污染 analysis。
+LLM_TOPIC_FIELDS = {
+    "专题归因分析文本": "120-200 字。围绕该成本要素的波动，按驱动因素排序说明成因，"
+                        "点到具体月份与金额；不得引入未经计算的因果断言。",
+    "专题对标分析文本": "100-160 字。结合一厂与二厂在该要素上的差异，"
+                        "说明可能的管理或采购成因。",
+    "专题风险分析": "100-160 字。给出该要素的后续风险提示与可核查的观察指标。",
+}
+
 LLM_MFG_NOTES = ["折旧变动说明", "动力变动说明", "间接人工变动说明",
                  "检验变动说明", "其他变动说明"]
 
@@ -248,16 +270,177 @@ WIKI_LINKS = {
 }
 
 
-def deterministic_map(fs: RF.FactSet, today: str) -> Dict[str, str]:
-    """脚本能算的全在这里。返回 占位符名 → 字符串。"""
+def render_topic_month_table(fs: RF.FactSet, element: str) -> str:
+    """
+    专题报告 2.2「分月明细」：该要素逐月的值、环比、占单位成本比。
+
+    ⚠️ 占用**该月自己的**单位成本做分母，不是用期间均值——
+       否则占比会随时间漂移，看着像"要素占比在变"，其实是分母选错了。
+    """
+    col = {"直接材料": "直接材料(元/盒)", "直接人工": "直接人工(元/盒)",
+           "制造费用": "制造费用(元/盒)"}.get(element)
+    rows = RF._read("csv/cost_data/中药一厂_成本汇总_2026年1-6月.csv")
+    ser = []
+    for r in rows:
+        if (r.get("产品名称") or "").strip() != fs.product:
+            continue
+        v = RF._num(r.get(col))
+        u = RF._num(r.get("单位成本(元/盒)"))
+        if v is None:
+            continue
+        ser.append((r["月份"], v, u))
+    ser.sort(key=lambda x: x[0])
+
+    out = []
+    for i, (m, v, u) in enumerate(ser):
+        if i == 0:
+            chg = "—"
+        else:
+            p = ser[i - 1][1]
+            chg = f"{(v - p) / p * 100:+.2f}%" if p else "—"
+        share = f"{v / u * 100:.2f}%" if u else "—"
+        out.append(f"| {m} | {RF._fmt(v)} | {chg} | {share} |")
+    return "\n".join(out) or "| — | — | — | — |"
+
+
+def render_topic_metric_table(fs: RF.FactSet, element: str) -> str:
+    """专题报告 2.1「专题指标一览」。"""
+    g = lambda k: (fs.facts[k].display if fs.facts.get(k) else "—")
+    last = fs.month
+    return "\n".join([
+        f"| {element}期间均值 | {g('专题期间均值')} 元/盒 | — | — | 算术均值 |",
+        f"| {element}期间加权值 | {g('专题期间加权')} 元/盒 | — | — | 按产量加权 |",
+        f"| 期间峰值 | {g('专题峰值')} 元/盒 | — | — | 见 2.2 分月明细 |",
+        f"| 期间谷值 | {g('专题谷值')} 元/盒 | — | — | 见 2.2 分月明细 |",
+        f"| 波动幅度 | {g('专题波动幅度')} 元/盒 | — | — | 峰值 − 谷值 |",
+        f"| 期末月单位成本 | {g('本月单位成本')} 元/盒 | — | — | {last} |",
+    ])
+
+
+def _topic_conclusion(fs: RF.FactSet, meta: Dict[str, Any]) -> str:
+    """
+    专题结论——**纯脚本拼串**，不含任何 LLM 成分。
+
+    ⚠️ 为什么结论不给 LLM：专题报告的失败模式是"结论跟着文字走"——
+       模型先把叙述写漂亮，结论再顺着叙述圆回来，最后结论与数据脱节
+       而读起来毫无破绽。所以结论先由数据钉死，后面的分析只能解释它。
+    """
+    t = meta.get("topic_name") or "成本要素"
+    g = lambda k: (fs.facts[k].display if fs.facts.get(k) else "—")
+    return (f"{t}在分析期内均值 {g('专题期间均值')} 元/盒、"
+            f"按产量加权 {g('专题期间加权')} 元/盒；"
+            f"峰值 {g('专题峰值')}、谷值 {g('专题谷值')}，"
+            f"波动幅度 {g('专题波动幅度')} 元/盒。"
+            f"（数值全部由脚本从原始成本表算出，未经模型改写。）")
+
+
+def _quarter_of(month: str) -> str:
+    """`'2026-05'` → `'2026-Q2'`。只给月份时推断所属季度。"""
+    y, m = int(month[:4]), int(month[5:7])
+    return f"{y}-Q{(m - 1) // 3 + 1}"
+
+
+# 专题分析的候选要素（赛题只要求"专题"，不指定要素——故由用户选一个）
+TOPIC_ELEMENTS = ["直接材料", "直接人工", "制造费用"]
+
+
+def _build_topic_facts(product: str, month: str,
+                       element: str) -> Tuple[RF.FactSet, Dict[str, Any]]:
+    """
+    专题分析：围绕**单一成本要素**跨月展开。
+
+    做法：先取该要素的逐月序列，再算它的期间统计与环比。
+    ⚠️ 专题**不重算**别的要素——那份数据在月度/季度报告里已经有了，
+       重复算只会多一处可能漂移的口径。
+    """
+    if element not in TOPIC_ELEMENTS:
+        element = TOPIC_ELEMENTS[0]
+    fs = RF.build(product, month)
+    col = {"直接材料": "直接材料(元/盒)", "直接人工": "直接人工(元/盒)",
+           "制造费用": "制造费用(元/盒)"}[element]
+
+    rows = RF._read("csv/cost_data/中药一厂_成本汇总_2026年1-6月.csv")
+    ser = [(r["月份"], RF._num(r.get(col)), RF._num(r.get("产量(盒)")))
+           for r in rows
+           if (r.get("产品名称") or "").strip() == product]
+    ser = [x for x in ser if x[1] is not None]
+    ser.sort(key=lambda x: x[0])
+
+    vals = [v for _, v, _ in ser]
+    qty = [q or 0.0 for _, _, q in ser]
+    mean = sum(vals) / len(vals) if vals else None
+    total_q = sum(qty)
+    wavg = (sum(v * q for v, q in zip(vals, qty)) / total_q) if total_q else None
+    peak = max(ser, key=lambda x: x[1]) if ser else None
+    low = min(ser, key=lambda x: x[1]) if ser else None
+
+    def add(name, value, unit="", formula=""):
+        if value is None:
+            return
+        fs.facts[name] = RF.Fact(value=value, display=RF._fmt(value),
+                                 unit=unit, formula=formula)
+
+    add("专题期间均值", mean, "元/盒", f"{len(vals)} 个月算术均值")
+    add("专题期间加权", wavg, "元/盒", "Σ(单位值×月产量) ÷ 总产量")
+    add("专题峰值", peak[1] if peak else None, "元/盒",
+        f"{peak[0]} 取得" if peak else "")
+    add("专题谷值", low[1] if low else None, "元/盒",
+        f"{low[0]} 取得" if low else "")
+    if peak and low:
+        add("专题波动幅度", peak[1] - low[1], "元/盒", "峰值 − 谷值")
+
+    meta = {"theme": "topic", "topic_name": element, "topic_months": len(vals)}
+    return fs, meta
+
+
+def deterministic_map(fs: RF.FactSet, today: str,
+                      theme: str = "monthly",
+                      theme_meta: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """
+    脚本能算的全在这里。返回 占位符名 → 字符串。
+
+    ⚠️ `theme` 只影响**措辞类**占位符（标题/报告类型/期间名）。
+       数字占位符三种主题完全共用——因为季度/专题的 FactSet 键名
+       与月度一致（`本月X` 在季度里语义即「本季度X」）。
+    """
+    tm = theme_meta or {}
+    label_zh = ""        # 季度是「2026 年二季度」这种中文期间名；其余主题留空
     code = PRODUCT_CODE.get(fs.product, "XX")
     ym = fs.month.replace("-", "")
+    if theme == "quarterly":
+        period_label = tm.get("label") or fs.month
+        suffix = (tm.get("quarter") or "").replace("-Q", "Q").replace("Q", "-Q")
+        m_title = f"中药一厂 {period_label} 季度产品成本多维深度分析报告 — {fs.product}"
+        rtype = "季度产品成本多维深度分析报告"
+        rno = f"RPT-{suffix}-{code}-001" if suffix else f"RPT-{ym}-{code}-001"
+        _ms = tm.get("months") or [fs.month]
+        span = f"{_ms[0]} ~ {_ms[-1]}"          # 只列首尾，不罗列全部月份
+        label_zh = (tm.get("label") or "")
+    elif theme == "topic":
+        topic = tm.get("topic_name") or "成本专题"
+        period_label = f"{fs.month}　{topic}专题"
+        m_title = f"中药一厂 {fs.month} {topic}专题分析报告 — {fs.product}"
+        rtype = f"{topic}专题分析报告"
+        rno = f"RPT-{ym}-{code}-T"
+        span = f"2026-01 ~ {fs.month}"
+    else:
+        period_label = fs.month
+        m_title = f"中药一厂 {fs.month} 月度产品成本多维深度分析报告 — {fs.product}"
+        rtype = "月度产品成本多维深度分析报告"
+        rno = f"RPT-{ym}-{code}-001"
+        span = fs.month
+
     m: Dict[str, str] = {
-        "报告标题": f"中药一厂 {fs.month} 月度产品成本多维深度分析报告 — {fs.product}",
-        "报告编号": f"RPT-{ym}-{code}-001",
-        "分析月份": fs.month,
+        "报告标题": m_title,
+        "报告编号": rno,
+        "分析月份": period_label if theme != "quarterly" else (tm.get("quarter") or fs.month),
+        "分析期间": label_zh or period_label,
+        "期间起止": span,
         "编制日期": today,
-        "报告类型": "月度产品成本多维深度分析报告",
+        "报告类型": rtype,
+        "专题名称": tm.get("topic_name", "—"),
+        "专题结论": "",          # 由 build 里脚本拼串后填入（不在 LLM 手里）
+        "选题理由": tm.get("topic_reason", "该要素在本期波动最显著，故选作专题。"),
         "产品名称": fs.product,
         "产品规格": PRODUCT_SPEC.get(fs.product, "—"),
     }
@@ -475,7 +658,8 @@ def _facts_brief(fs: RF.FactSet) -> str:
 
 
 def generate_analysis(fs: RF.FactSet, llm: Any, verbose: bool = True,
-                      threshold: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                      threshold: Optional[Dict[str, Any]] = None,
+                      extra_fields: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """让 LLM 写叙事段落 + 改进建议。一次调用拿一个结果，字段小、可控。
 
     ⚠️ 「重点分析段落」**只在脚本判定确有要素超 ±10% 时才生成**。
@@ -513,7 +697,11 @@ def generate_analysis(fs: RF.FactSet, llm: Any, verbose: bool = True,
     else:
         out["重点分析段落"] = ""
 
-    for name, spec in LLM_SCALAR_FIELDS.items():
+    # 专题主题额外要的字段（月度/季度传 None，行为不变）
+    _fields = dict(LLM_SCALAR_FIELDS)
+    if extra_fields:
+        _fields.update(extra_fields)
+    for name, spec in _fields.items():
         prompt = (f"## 事实（这些是脚本算好的，只许引用，不许改动或重算）\n\n{brief}\n\n"
                   f"## 任务\n请写「{name}」。要求：{spec}\n"
                   f"直接输出正文，不要标题、不要前后缀、不要 markdown 代码块。")
@@ -570,18 +758,63 @@ def generate_analysis(fs: RF.FactSet, llm: Any, verbose: bool = True,
 def build(product: str, month: str, use_llm: bool = True,
           verbose: bool = True,
           template_docx: Optional[str] = None,
-          docx_out_path: Optional[str] = None) -> Dict[str, Any]:
-    fs = RF.build(product, month)
+          docx_out_path: Optional[str] = None,
+          theme: str = "monthly", period: str = "") -> Dict[str, Any]:
+    """
+    `theme`（赛题 5.1.3 的「分析主题」）：
+
+        monthly   月度成本分析 —— 一个自然月（默认，行为不变）
+        quarterly 季度成本分析 —— 一个季度，**按产量加权**聚合
+        topic     专题分析     —— 围绕单一成本要素跨月展开
+
+    ⚠️ 三种主题**共用下游的全部管线**（`deterministic_map`、表格渲染、
+       LLM 分析、Word/PDF 导出）——差别只在「喂进去的 FactSet 不同」
+       与「套的模板不同」。这样新增主题不必复制一套生成逻辑，
+       也就不会出现"三种主题各算各的、数字对不上"。
+
+    `period` 是主题对应的时间标识：季度为 `2026-Q2`，
+    专题为 `材料`（要素名）。月度忽略它、用 `month`。
+    """
+    theme_meta: Dict[str, Any] = {"theme": theme}
+    if theme == "quarterly":
+        import period_agg as PA
+        q = period or _quarter_of(month)
+        fs, qmeta = PA.build_quarter(product, q)
+        theme_meta.update(qmeta)
+    elif theme == "topic":
+        fs, tmeta = _build_topic_facts(product, month, period or "直接材料")
+        theme_meta.update(tmeta)
+    else:
+        theme = "monthly"
+        fs = RF.build(product, month)
     today = date.today().isoformat()
 
     # 先收集**全部**值，最后**只填一次**。
     # ⚠️ 不要"先填一次、拿到 LLM 文本再填第二次"——第一次填充会把未提供的
     #    占位符换成 `—`，占位符就没了，第二次无从替换（本库踩过这个坑）。
-    vals = deterministic_map(fs, today)
+    vals = deterministic_map(fs, today, theme, theme_meta)
     # 无超阈值要素（或未启用 LLM）时留空——`fill` 对空串不显示 `—`，
     # 而对"未提供的占位符"会显示 `—`。这里必须先占位，否则无告警的报告
     # 会出现一个孤零零的 `—`。
     vals["重点分析段落"] = ""
+
+    # 专题报告的**结论段由脚本拼串**，不交给 LLM。
+    # ⚠️ 专题最容易出的问题是"结论跟着文字走"：模型先把叙述写漂亮，
+    #    结论再顺着叙述圆回来。所以结论先由数据钉死，LLM 只能解释它。
+    if theme == "topic":
+        vals["专题结论"] = _topic_conclusion(fs, theme_meta)
+        vals["专题结论复核"] = vals["专题结论"]
+        _el = theme_meta.get("topic_name") or "直接材料"
+        vals["专题指标表格"] = render_topic_metric_table(fs, _el)
+        vals["专题分月表格"] = render_topic_month_table(fs, _el)
+        # 量价拆解在本数据上无法真做（没有"采购单价 × 单耗"的分列），
+        # 所以**如实说做不到**，而不是编一个拆解结果。
+        vals["专题对标表格"] = render_peer_table(fs)
+        vals["量价拆解表格"] = (
+            "| 因素 | 贡献(元/盒) | 占总变动比 | 判定 |\n"
+            "| 价格效应 | — | — | raw 无采购单价列，**无法分离** |\n"
+            "| 用量效应 | — | — | raw 无单耗列，**无法分离** |\n"
+            "| 合计 | — | — | 见 2.2 分月明细的实际变动 |")
 
     # 波动告警结论先由脚本定死，再决定要不要让 LLM 写重点分析
     th = evaluate_threshold(fs)
@@ -592,9 +825,13 @@ def build(product: str, month: str, use_llm: bool = True,
 
     analysis: Dict[str, Any] = {}
     if use_llm:
+        # 专题主题额外要这三段（月度/季度不需要）
+        _extra = LLM_TOPIC_FIELDS if theme == "topic" else {}
         if verbose:
-            print(f"  交给 LLM 写 {len(LLM_SCALAR_FIELDS)} 段分析 + {len(LLM_MFG_NOTES)} 条制造费用说明…")
-        analysis = generate_analysis(fs, _llm_client(), verbose=verbose, threshold=th)
+            print(f"  交给 LLM 写 {len(LLM_SCALAR_FIELDS) + len(_extra)} 段分析 + "
+                  f"{len(LLM_MFG_NOTES)} 条制造费用说明…")
+        analysis = generate_analysis(fs, _llm_client(), verbose=verbose,
+                                     threshold=th, extra_fields=_extra)
         try:
             advice = json.loads(analysis.get("_advice", "[]"))
             if not isinstance(advice, list):
@@ -619,7 +856,11 @@ def build(product: str, month: str, use_llm: bool = True,
             blank_keys={"重点分析段落"})
         report = f"（已按 Word 模板生成：{docx_out.name}）"
     else:
-        template = TEMPLATE.read_text(encoding="utf-8")
+        tpl_path = TEMPLATES.get(theme, TEMPLATE)
+        if not tpl_path.exists():
+            raise FileNotFoundError(
+                f"主题「{THEME_ZH.get(theme, theme)}」的模板不存在：{tpl_path}")
+        template = tpl_path.read_text(encoding="utf-8")
         report, missing = fill(template, vals)
 
     # 统计
@@ -645,6 +886,10 @@ def main() -> int:
     ap.add_argument("--json", action="store_true", help="额外输出统计 JSON")
     ap.add_argument("--template-docx", metavar="PATH",
                     help="改用 Word 模板（赛题 5.1.1）；不传则用默认 .md 模板")
+    ap.add_argument("--theme", choices=["monthly", "quarterly", "topic"],
+                    default="monthly", help="分析主题（赛题 5.1.3）")
+    ap.add_argument("--period", default="",
+                    help="季度用 2026-Q2；专题用要素名（直接材料/直接人工/制造费用）")
     a = ap.parse_args()
 
     if a.dry_run:
@@ -652,7 +897,8 @@ def main() -> int:
         print(f"确定性填充（--dry-run，不调用 LLM）  {a.product} {a.month}")
         print("=" * 74)
         r = build(a.product, a.month, use_llm=False, verbose=False,
-                  template_docx=a.template_docx, docx_out_path=a.out)
+                  template_docx=a.template_docx, docx_out_path=a.out,
+                  theme=a.theme, period=a.period)
         print(f"  已填占位符 {r['stats']['deterministic_fields']} 个")
         print(f"  仍待 LLM 填 {len(r['stats']['missing'])} 个：")
         for m in r["stats"]["missing"]:
@@ -663,7 +909,8 @@ def main() -> int:
     print(f"生成报告  {a.product}  {a.month}")
     print("=" * 74)
     r = build(a.product, a.month, use_llm=True,
-              template_docx=a.template_docx, docx_out_path=a.out)
+              template_docx=a.template_docx, docx_out_path=a.out,
+              theme=a.theme, period=a.period)
     if r.get("docx"):
         # Word 模板模式：产物就是那份 docx，不再写 md
         out = Path(r["docx"])
@@ -673,7 +920,11 @@ def main() -> int:
         out.write_text(r["report"], encoding="utf-8", newline="\n")
 
     print()
-    print(f"✅ 已生成 {out.relative_to(WIKI_ROOT)}")
+    try:
+        shown = out.relative_to(WIKI_ROOT)
+    except ValueError:
+        shown = out            # 用户在仓库外指定的绝对路径
+    print(f"✅ 已生成 {shown}")
     print(f"   确定性占位符 {r['stats']['deterministic_fields']} 个")
     print(f"   LLM 分析文本 {r['stats']['llm_chars']} 字")
     if r["stats"]["missing"]:

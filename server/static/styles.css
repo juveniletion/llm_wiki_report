@@ -150,6 +150,26 @@ a:hover { text-decoration: underline; }
 }
 .card > h2 .hint { font-size: 13px; font-weight: 400; color: var(--muted); }
 .card-sub { color: var(--muted); font-size: 13.5px; margin: 0 0 20px; max-width: 74ch; }
+
+/* ---- 预测卡片：与「事实」卡片在视觉上区分开 ----
+ * 预测值没有 raw 坐标、不可复算，与看板其余数字性质不同。
+ * 用左侧琥珀色描边 + 虚线外框提示「这是外推」，避免被当成承诺值读。 */
+.fc-card {
+  border-left: 3px solid var(--warn);
+  background: linear-gradient(180deg, var(--warn-soft) 0%, var(--surface) 64px);
+}
+.fc-tag {
+  display: inline-block; vertical-align: middle;
+  margin-left: 8px; padding: 2px 9px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 600; letter-spacing: .04em;
+  color: var(--warn); background: var(--warn-soft);
+  border: 1px dashed var(--warn-line);
+}
+.fc-warn {
+  margin-top: 14px; padding: 10px 14px; border-radius: 10px;
+  background: var(--warn-soft); border: 1px solid var(--warn-line);
+  color: var(--warn); font-size: 13px; line-height: 1.7;
+}
 .card-sub:last-child { margin-bottom: 0; }
 
 .grid3 {
@@ -737,6 +757,48 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px
   box-shadow: var(--sh-2);
   transition: border-color .15s var(--ease), box-shadow .15s var(--ease);
 }
+
+/* ---- 会话切换条（多会话：新建 / 切换 / 删除）----
+ * 放在提问框**上方**：先选会话，再提问——顺序与心智一致。
+ * 风格沿用前端 token（暖灰底、深青绿主色、圆角与阴影分级），不另造色。 */
+.conv-bar {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 0 10px;
+}
+.conv-label {
+  font-size: 13px; color: var(--faint); flex: none;
+  letter-spacing: .02em;
+}
+.conv-select {
+  appearance: none; cursor: pointer;
+  flex: 1; min-width: 0; max-width: 380px;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 8px 30px 8px 12px;
+  font: 400 14px/1.4 inherit;
+  background-image: linear-gradient(45deg, transparent 50%, var(--faint) 50%),
+                    linear-gradient(135deg, var(--faint) 50%, transparent 50%);
+  background-position: right 14px center, right 9px center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  transition: border-color .15s var(--ease);
+}
+.conv-select:hover:not(:disabled) { border-color: var(--faint); }
+.conv-select:focus { outline: none; border-color: var(--accent);
+                     box-shadow: 0 0 0 3px var(--accent-wash); }
+.conv-select:disabled { opacity: .55; cursor: not-allowed; }
+
+.conv-new, .conv-del {
+  appearance: none; cursor: pointer; flex: none;
+  font: 500 13px/1 inherit;
+  border-radius: 999px; padding: 8px 14px;
+  border: 1px solid var(--line); background: var(--surface);
+  color: var(--ink-2);
+  transition: border-color .15s var(--ease), color .15s var(--ease);
+}
+.conv-new:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.conv-del:hover:not(:disabled) { color: var(--up); border-color: var(--up); }
+.conv-new:disabled, .conv-del:disabled { opacity: .5; cursor: not-allowed; }
 .askbar:focus-within, .tokbar:focus-within {
   border-color: var(--accent);
   box-shadow: 0 0 0 4px var(--accent-wash), var(--sh-2);

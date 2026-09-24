@@ -50,9 +50,43 @@ WIKI_ROOT = HERE.parent
 sys.path.insert(0, str(WIKI_ROOT / "scripts"))
 
 import report_facts as RF  # noqa: E402
+from errors import AgentError, ConfigError, DataMissing  # noqa: E402
 
 app = FastAPI(title="制药成本分析看板 API", version="1.0.0",
               description="只读。数据来自 llm-wiki 知识库（证据可溯）。")
+
+
+# ---------------------------------------------------------------------------
+# 统一错误响应
+# ---------------------------------------------------------------------------
+# ⚠️ 为什么必须有这一段（本库踩过的真实事故）：
+#
+#   数据缺失曾经用 `raise SystemExit(...)` 报。`SystemExit` 继承 **BaseException**，
+#   而本文件所有兜底都是 `except Exception`（见 chat / search / decide / export
+#   等处）——**一处都拦不住**。
+#
+#   后果不是"报错"而是**请求直接断连**：HTTP 层没有响应，浏览器只看到
+#   connection reset，前端把"缺个 CSV"显示成"网络错误"，
+#   排查时看不出是哪个请求、缺哪个文件。
+#
+#   ⇒ 可预期的失败（缺数据 / 缺配置）必须给出**结构化 JSON + 明确的下一步**。
+
+@app.exception_handler(DataMissing)
+async def _on_data_missing(_req: Request, exc: DataMissing) -> JSONResponse:
+    # 503 而非 500：这是"暂时取不到数"，不是"服务写错了"。
+    return JSONResponse(status_code=503, content=exc.as_dict())
+
+
+@app.exception_handler(ConfigError)
+async def _on_config_error(_req: Request, exc: ConfigError) -> JSONResponse:
+    # 501 语义上不贴切，但这里要的是"能区分"：缺 Key 与缺数据是两回事，
+    # 排查动作完全不同（配 .env vs 放数据），状态码分开更好定位。
+    return JSONResponse(status_code=501, content=exc.as_dict())
+
+
+@app.exception_handler(AgentError)
+async def _on_agent_error(_req: Request, exc: AgentError) -> JSONResponse:
+    return JSONResponse(status_code=500, content=exc.as_dict())
 
 STATIC = HERE / "static"
 WIKI = WIKI_ROOT / "wiki"

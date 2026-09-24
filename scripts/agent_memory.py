@@ -38,7 +38,7 @@ agent_memory.py — **agent 记忆层**（读写 SQLite 权威区）
 
 路径
 ----
-默认库路径由 `paths.default_db()` 决定（环境变量 `LLM_WIKI_DB` > 容器 /data >
+默认库路径由 `paths.default_db()` 决定（环境变量 `LLM_WIKI_DATA` > 容器 /data >
 仓库内 state/ > 本机 F: 盘）。**不要在本文件里硬编码**——那会让容器部署失败。
 """
 from __future__ import annotations

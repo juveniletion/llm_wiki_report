@@ -44,6 +44,7 @@ mock 服务没起（很常见）时，任务不能丢——降级写进本地 `u
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -60,7 +61,13 @@ ensure_utf8_stdout()
 HERE = Path(__file__).resolve().parent
 WIKI_ROOT = HERE.parent
 
-DEFAULT_BASE = "http://127.0.0.1:8090"
+# 默认地址：本机直跑脚本时用（mock 就在本机 8090）。
+# ⚠️ 容器里必须覆盖：容器内的 `127.0.0.1` 指的是**容器自己**，
+#    而 mock 是**另一个服务**，要走 compose 服务名 `rpa-mock`。
+#    所以地址可配（env `RPA_BASE_URL`），由 compose 注入。
+#    写死的后果不是报错，而是"连接被拒"→ 四个计数永远为 0 ——
+#    看起来像"没有任务"，实际是发不出去。
+DEFAULT_BASE = os.getenv("RPA_BASE_URL", "http://127.0.0.1:8090").rstrip("/")
 
 # 状态机（读 mock 源码得到）。用于前端展示进度。
 STATUS_FLOW = ["sent", "received", "confirmed", "in_progress", "completed"]

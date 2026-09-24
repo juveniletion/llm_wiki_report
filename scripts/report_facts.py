@@ -48,6 +48,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from console_io import ensure_utf8_stdout  # noqa: E402
+from errors import DataMissing, ConfigError  # noqa: E402
 
 ensure_utf8_stdout()
 
@@ -102,7 +103,15 @@ def _pct(cur: Optional[float], prev: Optional[float]) -> Optional[float]:
 def _read(name: str) -> List[Dict[str, str]]:
     p = RAW / name
     if not p.exists():
-        raise SystemExit(f"raw 文件缺失: {name}")
+        # ⚠️ 这里曾是 `raise SystemExit`。SystemExit 继承 BaseException，
+        #    app.py 的 `except Exception` 拦不住 ⇒ 6 个看板接口
+        #    （overview/trend/heatmap/products/benchmark/decide）会**直接断连**，
+        #    前端显示"网络错误"，把"缺个 CSV"误报成"服务挂了"。
+        #    改用可捕获的 DataMissing，HTTP 层才能回一句人话。
+        raise DataMissing(
+            f"raw 文件缺失: {name}（找的是 {p}）",
+            hint="确认数据已放在 raw/csv/ 下；自造的样例工作区可跑 "
+                 "python scripts/make_sample_workspace.py 生成")
     with open(p, encoding="utf-8-sig", newline="") as f:
         return list(csv.DictReader(f))
 
@@ -495,14 +504,39 @@ def build(product: str, month: str) -> FactSet:
             "方向": "一厂高" if a > b else ("二厂高" if b > a else "持平"),
         })
 
-    # ---- 已知不可自洽点（来自 wiki 的 Disputed 登记）----
-    fs.conflicts.extend([
-        "官方称金银花涨「12%」，但任何可复现口径都算不出 12%（复算 5 月较 1 月 `+10.40%`）"
-        "——报告若照抄会引用一个无法验证的数字",
-        "银黄工艺人工定额 `1.72` vs 成本表实际 `1.48~1.55`（口径差异，非矛盾）",
-    ])
+    # ---- 已知不可自洽点：**从数据文件读**，不写死在代码里 ----
+    # ⚠️ 这两句原本硬编码在此处。它们描述的是**具体某批数据**的口径争议
+    #    （官方宣称的涨幅、工艺定额与实际值的差异），属于"关于数据的事实"，
+    #    本该跟数据一起走。
+    #    写死在这里的后果：换一套数据（如自造的样例工作区）后，
+    #    报告仍会印出针对**另一批数据**的说法——读者会看到一句
+    #    与眼前数字毫无关系的断言。而且它是"看起来对"的错，校验器拦不住。
+    fs.conflicts.extend(_data_conflicts())
 
     return fs
+
+
+# 口径说明文件：缺失即为空，不报错（老工作区没有这个文件也要能跑）
+_CONFLICTS_FILE = RAW / "meta/口径说明.json"
+
+
+def _data_conflicts() -> List[str]:
+    """
+    读 `raw/meta/口径说明.json` 里的 `已知不可自洽点`。
+
+    结构：
+        {"已知不可自洽点": ["...", "..."]}
+    文件不在 / 解析失败 / 键缺失 → 返回空列表（**静默降级**）。
+    这里不该因为"没有口径说明"而让取数失败——它只是补充信息。
+    """
+    if not _CONFLICTS_FILE.exists():
+        return []
+    try:
+        data = json.loads(_CONFLICTS_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    items = data.get("已知不可自洽点") or []
+    return [str(x) for x in items]
 
 
 # ---------------------------------------------------------------------------

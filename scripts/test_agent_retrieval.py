@@ -23,8 +23,21 @@ WIKI_ROOT = HERE.parent
 WIKI_DIR = WIKI_ROOT / "wiki"
 AGENTS_DIR = WIKI_ROOT.parent / "agents"
 
+# ⚠️ 这是个**开发期验证脚本，不属于本仓库**：
+#    它复用 `llm-wiki/agents/wiki_calling_agent.py`（本仓库的**兄弟目录**），
+#    用途是"拿一个通用 agent 来试本知识库是否可被消费"。
+#    克隆本仓库的人没有那个目录，所以这里要**明确说清楚**，
+#    而不是扔一个 `ModuleNotFoundError: No module named 'wiki_calling_agent'`
+#    让人以为仓库坏了。
 sys.path.insert(0, str(AGENTS_DIR))
-from wiki_calling_agent import create_wiki_agent  # noqa: E402
+try:
+    from wiki_calling_agent import create_wiki_agent  # noqa: E402
+except ImportError as _e:  # noqa: BLE001
+    raise SystemExit(
+        f"本脚本依赖仓库外的 {AGENTS_DIR / 'wiki_calling_agent.py'}，未找到。\n"
+        f"  它是一个**开发期验证工具**，不随本仓库发布——\n"
+        f"  基础功能请改用：python scripts/retrieval.py --query '...'\n"
+        f"  （原错误：{_e}）") from None
 
 QUESTIONS = {
     "1": (

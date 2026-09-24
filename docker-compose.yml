@@ -10,6 +10,28 @@
 # ⚠️ 若所在网络有本地代理（本机就有 HTTP_PROXY=127.0.0.1:5479），
 #    Docker 构建/运行时**不要**让它去走该代理——容器里的 127.0.0.1 是容器自己。
 #    本项目默认不配代理即可。
+#
+# =============================================================================
+# 数据从哪来 —— 镜像零数据，全靠挂载
+# =============================================================================
+# 镜像里**不含任何业务数据**（见 Dockerfile 头部说明：镜像层就是 tar 包，
+# 烤进去不等于保密）。数据由本文件在运行时挂进来。
+#
+# 要跑**真实数据**，在 `.env` 或命令行指定数据目录：
+#
+#     WIKI_DATA_DIR=../pharma-cost-wiki docker compose up -d
+#     # 或写进 .env：WIKI_DATA_DIR=C:/Users/.../pharma-cost-wiki
+#
+# 不指定则用 `WIKI_DATA_DIR=.`（当前目录，即仓库内的**样例**数据）。
+#
+# ⚠️ 两个方向都要挂，缺一项就有功能坏掉：
+#    输入（只读） raw / wiki / state / graph —— 少了看板与问答就没料
+#    输出（可写） reports / exports       —— 少了生成的报告在宿主机上看不见
+#
+# ⚠️ 为什么**逐目录**挂载，而不是把整个数据根挂到 /app：
+#    各脚本的 `WIKI_ROOT = HERE.parent` 是**写死在脚本所在位置**的
+#    （只有 graph_build / ingest_tools / state / app.py 额外认 LLM_WIKI_WS）。
+#    所以数据根没法整体挪走；逐目录挂载是**唯一不改代码**的切换方式。
 
 services:
   wiki-dashboard:
@@ -25,19 +47,23 @@ services:
       # 要给别人看，改成 "8765:8765"（或前面加反代做鉴权）。
       - "127.0.0.1:8765:8765"
 
-    # ⚠️ 关键：`.env` 必须**显式指定路径**。
-    #    踩过的坑：Compose 只在**本 compose 文件所在目录**找 `.env`，
-    #    而本项目的 `.env` 在工作区根目录（三层之上）。
-    #    只写 ${VAR} 插值的话，值全是空的——更隐蔽的是，带 `:-默认值` 的
-    #    变量会**悄悄用上默认值**（如 BASE_URL 显示得像配好了），
-    #    让人以为注入成功，直到真去对话才发现没有 Key。
+    # `.env` 放在**本 compose 文件所在目录**（仓库根）。
+    # ⚠️ 原来写的是 `../../../.env`——那是真数据仓库的三层之上，
+    #    公开仓库里根本不存在这个文件；而 `required: false` 让缺失**静默通过**，
+    #    于是新克隆的人以为配好了，直到真去对话才发现没有 Key。
+    #    改为仓库根 .env，并配 .env.example 列出全部键名。
     env_file:
-      - path: ../../../.env
-        required: false        # 没有 .env 时不报错（纯看板无需 Key）
+      - path: .env
+        required: false
 
     environment:
-      # 记忆库位置 —— 指向下面的卷。**这是权威区，不可重建。**
-      LLM_WIKI_DB: /data/llm-wiki.db
+      # 数据根 —— 指向下面的记忆卷。三个库都挂在它下面（auth/shared/users）。
+      # ⚠️ 是 LLM_WIKI_DATA 而不是 LLM_WIKI_DB：后者只在 paths.describe() 里
+      #    被读去做提示文字，不参与解析。设错了不会有任何效果，只会误导排查。
+      LLM_WIKI_DATA: /data
+      # RPA mock 的地址：容器里的 127.0.0.1 指的是**自己**，所以必须用服务名。
+      # （rpa_client.py 默认值仍是 127.0.0.1:8090，便于本机直跑脚本。）
+      RPA_BASE_URL: http://rpa-mock:8090
       # 中文输出、无缓冲，日志才实时
       PYTHONUNBUFFERED: "1"
 
@@ -47,13 +73,59 @@ services:
       #    这就是"镜像重建但对话记忆存活"的实现。
       - wiki-memory:/data
 
+      # ---- 输入：只读挂载（容器不该改这些）----
+      - ${WIKI_DATA_DIR:-.}/raw:/app/raw:ro
+      - ${WIKI_DATA_DIR:-.}/wiki:/app/wiki:ro
+      - ${WIKI_DATA_DIR:-.}/state:/app/state:ro
+      - ${WIKI_DATA_DIR:-.}/graph:/app/graph:ro
+
+      # ---- 输出：可写挂载（否则生成的报告只在容器里，宿主机看不见）----
+      - ${WIKI_DATA_DIR:-.}/reports:/app/reports
+      - ${WIKI_DATA_DIR:-.}/exports:/app/exports
+
+    depends_on:
+      rpa-mock:
+        condition: service_started
+
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/api/health',timeout=4).status==200 else 1)"]
       interval: 30s
       timeout: 5s
-      start_period: 15s
+      start_period: 20s
       retries: 3
+
+  # ===========================================================================
+  # 模拟 RPA 服务（赛题模块四的投递目标）
+  # ---------------------------------------------------------------------------
+  # ⚠️ 这个服务原先**不在 compose 里**，导致模块四在容器中恒不可用：
+  #    整改任务发不出去、任务追踪看板永远是空的（四个计数全 0）。
+  #
+  # 它与 `raw/` 的关系：mock 的代码属于**本项目自研**，不是赛题数据，
+  # 但先前放在 `raw/rpa/` 下——而 `raw/` 是不外传的。现已迁到 `server/mock_rpa.py`，
+  # 于是它能随公开仓库发布，模块四也就能在别人机器上跑通。
+  #
+  # 端口 8090 **不对外映射**：只在 compose 网络内供 wiki-dashboard 访问。
+  # 要看任务状态走主服务的 /api/rpa/* 接口。
+  # ===========================================================================
+  rpa-mock:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.mock
+    image: pharma-cost-wiki-rpa-mock:latest
+    container_name: pharma-cost-wiki-rpa-mock
+    restart: unless-stopped
+    environment:
+      PYTHONUNBUFFERED: "1"
+      # tracking_url 要指向**从宿主机能打开**的地址。mock 自身端口不映射，
+      # 所以指到看板的转发接口（宿主机上的 8765）。
+      RPA_PUBLIC_BASE: http://localhost:8765
+    # ⚠️ 无卷、也不该有：mock 的任务状态是**内存里的 dict**（原代码即如此，
+    #    注释写着"模拟环境，不持久化"）。给容器重建后任务就没了——
+    #    这是 mock 的设计，不是缺陷。要留任务记录就别重启它。
+    #
+    #    同理**没有**端口映射：8090 只在 compose 网络内可见。
+    #    想看任务状态请走主服务的 /api/rpa/*（它转发给本服务）。
 
 volumes:
   wiki-memory:

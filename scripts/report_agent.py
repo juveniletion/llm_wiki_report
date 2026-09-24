@@ -40,6 +40,7 @@ from typing import Any, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from console_io import ensure_utf8_stdout  # noqa: E402
+from errors import ConfigError  # noqa: E402
 
 ensure_utf8_stdout()
 
@@ -164,7 +165,9 @@ def build_agent(root: Optional[Path] = None, model: Optional[str] = None,
     base_url = (os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")).rstrip("/")
     model_name = model or os.getenv("AGENT_MODEL", "deepseek-chat")
     if not api_key:
-        raise SystemExit("未找到 DEEPSEEK_API_KEY（应在工作区根目录的 .env）")
+        raise ConfigError(
+            "未找到 DEEPSEEK_API_KEY",
+            hint="在工作区根目录建 .env，写入 DEEPSEEK_API_KEY=...")
 
     llm = ChatOpenAI(
         model=model_name, api_key=api_key, base_url=base_url,

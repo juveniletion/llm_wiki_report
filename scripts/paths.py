@@ -7,20 +7,29 @@ paths.py — **路径解析**（让代码既能跑在本机，也能跑在容器
 SQLite 库路径原先硬编码为 `F:\\llm-wiki.db`（六处），这在开发机上没问题，
 但**部署到容器就崩**——容器里没有 F 盘。
 
-所以路径改成**三级回退**：
+现在按**数据根目录**（data root）解析，三级回退：
 
-    ① 环境变量 `LLM_WIKI_DB`        ← 部署时由 compose/编排注入（最高优先）
-    ② 仓库内的 `state/llm-wiki.db`  ← 便携默认（克隆到任何机器都能跑）
-    ③ Windows 的 `F:\\llm-wiki.db`  ← 仅当 F: 盘存在时，兼容本机既有数据
+    ① 环境变量 `LLM_WIKI_DATA`   ← 指向整个数据根（最高优先）
+    ② `/data`                    ← 容器约定挂载点（存在且可写时用）
+    ③ 仓库内的 `data/`           ← 本机便携默认
 
-②③ 的顺序值得说明：便携默认**优先**，是因为"克隆下来就能跑"比"沿用旧路径"
-更重要。但本机 F: 盘确实存在且有真实数据，所以③作为该场景的后备保留——
-已有的对话记忆不会因为这次改动而"消失"。
+库都挂在数据根下，**按职责分三个**（见下）：
+
+    <data_root>/auth.db                 认证目录：谁是谁 + 令牌
+    <data_root>/shared/knowledge.db     知识库镜像：全体共享、只读、**可重建**
+    <data_root>/users/<id>.db           个人对话/摘要/偏好：**不可重建**
+
+⚠️ **注意 `LLM_WIKI_DB` 是历史遗留**（本模块下面仍定义 `ENV_KEY`，
+   但只在 `describe()` 里读来做提示文字，**不参与解析**）。
+   早先版本只有一个库文件，用 `LLM_WIKI_DB` 指它；改成"数据根 + 三库"之后，
+   这个变量就没有解析作用了。
+   若在部署脚本里看到它，**改它不会有任何效果**——要改的是 `LLM_WIKI_DATA`。
+   （陈旧配置是最难查的一类坑：设了、看着生效、其实被忽略。）
 
 用法
 ----
-    from paths import default_db
-    DB = default_db()
+    from paths import default_db, knowledge_db, auth_db, user_db
+    DB = default_db()          # 现在等价于 knowledge_db()
 
 命令行覆盖（各脚本的 `--db`）优先级最高，直接传入即可。
 """
@@ -171,15 +180,21 @@ def ensure_parent(p: Path) -> Path:
 
 
 def describe(db: Path) -> str:
-    """给日志/健康检查用的一句话说明这个路径是从哪来的。"""
+    """
+    给日志/健康检查用的一句话说明这个路径是从哪来的。
+
+    ⚠️ 判据从 `LLM_WIKI_DB` 改成 `LLM_WIKI_DATA`。
+       前者不再参与解析（见模块 docstring），若继续拿它当判据，
+       就会出现"设了 LLM_WIKI_DB 但路径其实来自别处"——
+       日志言之凿凿地指错方向，比不打印还坏。
+    """
     s = str(db)
-    if os.getenv(ENV_KEY):
-        return f"{s}  （来自环境变量 {ENV_KEY}）"
-    if db == CONTAINER_DB:
+    root = data_root()
+    if os.getenv(DATA_ROOT_ENV):
+        return f"{s}  （数据根来自环境变量 {DATA_ROOT_ENV}）"
+    if root == Path("/data"):
         return f"{s}  （容器卷 /data）"
-    if db == LEGACY_DB:
-        return f"{s}  （本机既有数据）"
-    return f"{s}  （仓库内默认）"
+    return f"{s}  （仓库内 data/ 默认）"
 
 
 def describe_all() -> str:

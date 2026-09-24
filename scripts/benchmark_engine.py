@@ -46,6 +46,7 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from console_io import ensure_utf8_stdout  # noqa: E402
+from errors import ConfigError  # noqa: E402
 import report_facts as RF  # noqa: E402
 
 ensure_utf8_stdout()
@@ -258,7 +259,8 @@ def _llm():
     import httpx
     key = os.getenv("DEEPSEEK_API_KEY", "")
     if not key:
-        raise SystemExit("未找到 DEEPSEEK_API_KEY")
+        raise ConfigError("未找到 DEEPSEEK_API_KEY",
+                       hint="在工作区根目录建 .env，写入 DEEPSEEK_API_KEY=...")
     return ChatOpenAI(
         model=os.getenv("AGENT_MODEL", "deepseek-chat"), api_key=key,
         base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),

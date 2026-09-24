@@ -42,6 +42,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(CODE_ROOT.parent / "agents"))
 
 from paths import default_db  # noqa: E402
+from errors import ConfigError  # noqa: E402
 
 # ⚠️ `ingest_tools` **必须延迟导入**。
 #    它的 `WIKI_ROOT` 在模块导入时由环境变量 `LLM_WIKI_WS` 决定；
@@ -219,7 +220,8 @@ def build_agent(model: Optional[str] = None, temperature: float = 0.0) -> Any:
     base_url = (os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")).rstrip("/")
     model_name = model or os.getenv("AGENT_MODEL", "deepseek-chat")
     if not api_key:
-        raise SystemExit("未找到 DEEPSEEK_API_KEY（应在工作区根目录的 .env）")
+        raise ConfigError("未找到 DEEPSEEK_API_KEY",
+                          hint="在工作区根目录建 .env，写入 DEEPSEEK_API_KEY=...")
 
     # Python 3.13 下 httpx 解压缩兼容
     llm = ChatOpenAI(
@@ -345,7 +347,7 @@ def main() -> int:
     ap.add_argument("--brief", help="直接读入采集简报 JSON（跳过采集）")
     ap.add_argument("--model", help="覆盖模型（默认取 .env 的 AGENT_MODEL）")
     ap.add_argument("--db", default=str(default_db()),
-                    help="SQLite 镜像库路径（收尾时同步；默认取 LLM_WIKI_DB 环境变量）")
+                    help="SQLite 镜像库路径（收尾时同步；默认取 LLM_WIKI_DATA 数据根下的知识库）")
     ap.add_argument("--wiki-root",
                     help="工作区根。默认=代码仓库（即既有行为）。"
                          "指向个人工作区时，raw/ 与 wiki/ 的读写都落在那里，"

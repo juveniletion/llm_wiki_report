@@ -32,6 +32,7 @@ export_doc.py — **文档导出**（Markdown → Word / PDF）
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -51,7 +52,19 @@ EXPORT_DIR = WIKI_ROOT / "exports"
 
 # 中文字体：用**字体名**而非路径 —— msyh.ttc 是 TTC 集合，
 # fontspec 走系统字体库比直接指路径稳。
-CJK_FONT = "Microsoft YaHei"
+#
+# ⚠️ 字体名是**按平台不同**的，写死一个就会在另一个平台炸。
+#    原来写死 "Microsoft YaHei"（Windows 字体）——容器（Debian）里没有它，
+#    xelatex 会报 `The font "Microsoft YaHei" cannot be found`。
+#    而 chart_render.py 早就按候选路径列表跨平台处理了，这里一直是漏的。
+#
+# 可用 env `CJK_FONT` 覆盖（万一装了别的字体）。
+_CJK_FONT_CANDIDATES = {
+    "win32": "Microsoft YaHei",
+    "darwin": "PingFang SC",
+}
+CJK_FONT = os.getenv("CJK_FONT") or _CJK_FONT_CANDIDATES.get(
+    sys.platform, "Noto Sans CJK SC")   # Linux/容器默认：fonts-noto-cjk 装的就是它
 
 # xeCJK 头文件 —— PDF 中文渲染的关键
 LATEX_HEADER = r"""

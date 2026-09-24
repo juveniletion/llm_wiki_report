@@ -1,0 +1,40 @@
+#
+# 模拟 RPA 服务 —— 独立小镜像
+#
+# 为什么要单独一个镜像
+# -------------------
+# 它是赛题模块四的**投递目标**（整改任务 POST 到这里），与看板是两个进程：
+#   · 生命周期不同：看板重建不该把任务状态冲掉
+#   · 依赖极小：只要 fastapi + uvicorn，不需要 matplotlib/LaTeX 那一大堆
+#   · 天然证明"HTTP 对接"是真的跨进程，不是同进程里自己调自己
+#
+# 端口 8090 **不对外映射**（见 docker-compose.yml）：
+# 只在 compose 网络内供 wiki-dashboard 用服务名 rpa-mock 访问。
+#
+# 注意：任务状态存在**内存**里（mock 的设计，非缺陷），容器重启即清空。
+
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+COPY requirements-mock.txt ./
+RUN pip install --no-cache-dir -r requirements-mock.txt
+
+COPY mock_rpa.py ./
+
+# 非 root：mock 也只需要监听端口，没有理由给 root
+RUN useradd -m -u 10002 rpa && chown -R rpa:rpa /app
+USER rpa
+
+EXPOSE 8090
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD python -c "import urllib.request,sys; \
+sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/health',timeout=4).status==200 else 1)"
+
+CMD ["python", "mock_rpa.py"]

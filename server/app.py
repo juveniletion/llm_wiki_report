@@ -1723,7 +1723,7 @@ def control_delete(path: str = Query(..., description="相对工作区的路径"
 
 class ExportIn(BaseModel):
     md: str = ""              # 源 markdown 的**名称**（限以下白名单目录内）
-    kind: str = "report"      # report | techspec | benchmark
+    kind: str = "report"      # 仅 report（技术方案/评测报告是赛题交付物，系离线产出，不经站点导出）
     fmt: str = "both"         # docx | pdf | both
     title: str = ""
     charts: bool = False      # 是否重绘并嵌入图表（赛题 5.1.3「图表嵌入」）
@@ -1811,36 +1811,36 @@ def _quarter_of_month(month: str) -> str:
 
 @app.get("/api/control/exports", summary="可导出的文档清单")
 def control_exports(authorization: str = Header(default=""), lw_sid: str = Cookie(default="")) -> Dict[str, Any]:
-    """列出可导出的文档。"""
+    """列出可导出的报告。"""
     _whoami(authorization, lw_sid)
     reps = sorted(REPORTS.glob("*.md")) if REPORTS.exists() else []
-    spec = WIKI_ROOT / "references" / "技术方案.md"
     return {"reports": [{"name": p.name, "stem": p.stem,
-                         "size": p.stat().st_size} for p in reps],
-            "techspec": ({"name": spec.name, "size": spec.stat().st_size}
-                         if spec.exists() else None)}
+                         "size": p.stat().st_size} for p in reps]}
 
 
 @app.post("/api/control/export", summary="导出 Word/PDF")
 def control_export(body: ExportIn, authorization: str = Header(default=""), lw_sid: str = Cookie(default="")) -> FileResponse:
     """
-    导出文档为 Word / PDF。**同步返回文件**（导出通常 3-15 秒，可接受）。
+    导出报告为 Word / PDF。**同步返回文件**（导出通常 3-15 秒，可接受）。
 
-    ⚠️ 源文件必须在**白名单目录**内（reports/ 或 references/），
+    ⚠️ 源文件必须在**白名单目录**内（reports/），
        且文件名只取 basename —— 否则 `../../.env` 之类能把任意文件读走。
     """
     import export_doc
     _whoami(authorization, lw_sid)
 
-    if body.kind == "report":
-        src = REPORTS / Path(body.md).name
-    elif body.kind == "techspec":
-        src = WIKI_ROOT / "references" / "技术方案.md"
-    else:
+    if body.kind != "report":
         raise HTTPException(400, f"未知的导出类型：{body.kind}")
+    # ⚠️ 先挡空名字：`REPORTS / Path("").name` == `REPORTS / ""` == **目录本身**，
+    #    而目录也 `exists()`，于是守卫放行、下一步读目录崩成 500。
+    #    改判 `is_file()` 并显式拒绝空名，让缺参数的请求得到 400 而不是 500。
+    name = Path(body.md).name
+    if not name:
+        raise HTTPException(400, "缺少报告文件名")
+    src = REPORTS / name
 
-    if not src.exists():
-        raise HTTPException(404, f"源文件不存在：{src.name}")
+    if not src.is_file():
+        raise HTTPException(404, f"源文件不存在：{name}")
     if body.fmt not in ("docx", "pdf", "both"):
         raise HTTPException(400, "fmt 只能是 docx / pdf / both")
 

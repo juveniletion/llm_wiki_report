@@ -2357,15 +2357,6 @@ function ExportBar({ me }) {
         导出的文档保留完整排版：页眉页脚、表格样式。
       </p>
       ${err ? html`<div class="alert" style=${{ marginBottom: 12 }}>⚠️ ${err}</div>` : null}
-      ${docs && docs.techspec ? html`
-        <div class="exp-row">
-          <span class="exp-name">技术方案文档</span>
-          ${["docx", "pdf"].map(f => html`
-            <button key=${f} class="chip" disabled=${busy}
-                    onClick=${() => doExport("techspec", "", f)}>
-              ${busy === "techspec" + f ? "导出中…" : f.toUpperCase()}
-            </button>`)}
-        </div>` : null}
       ${docs && docs.reports && docs.reports.length ? html`
         <h3 class="ws-h">月度分析报告</h3>
         ${docs.reports.map(r => html`

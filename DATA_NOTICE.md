@@ -41,9 +41,13 @@
 ```
 scripts/     业务脚本（取数、检索、报告生成、对标、RPA、校验、导出…）
 server/      FastAPI 后端 + React（vendor 版）前端 + 本地第三方库
-references/  技术方案、schema、命名约定
+references/  schema、命名约定、词条骨架、摄入实测记录（摄入 agent 的规范文件）
 *.md         架构与运行时说明（README / AGENT_RUNTIME / DEPLOY / INGEST_AGENT …）
 ```
+
+> **注意**：赛题交付物 #2 技术方案文档、#3 评测报告**不在本仓库**——
+> 它们只提交给赛事官方。评测报告正文含赛题数据的复算结果（单位成本、
+> 差异率），公开等同于间接外传，因此与 `data/`、`reports/` 同属排除之列。
 
 ## 要跑起来需要什么
 

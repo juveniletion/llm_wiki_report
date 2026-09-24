@@ -38,7 +38,16 @@ WIKI_ROOT = HERE.parent
 REQUIRED_CHAPTERS = ["## 一、封面与基本信息", "## 二、总成本概览", "## 三、成本要素明细分析",
                      "## 四、重点产品专项分析", "## 五、对标分析", "## 六、总结与建议"]
 
+# 专题是**另一套六章结构**（围绕单一成本要素展开），不是月度的改措辞
+REQUIRED_CHAPTERS_TOPIC = ["## 一、专题背景与结论", "## 二、现状数据", "## 三、驱动因素拆解",
+                           "## 四、对标参照", "## 五、风险评估", "## 六、结论与整改建议"]
+
 # 契约 §8 第 4 条：不得改动表头文字
+#
+# ⚠️ **表头随分析主题而变**（月度说"本月"、季度说"本季"、专题说"本期"）。
+#    原先这里只有月度一套，于是**季度报告会被误报"表头被改动 2 处"**——
+#    报告本身没错，是校验器认错了模板。现在按主题分开，
+#    `detect_theme()` 从正文自动识别，调用方不必自己声明。
 REQUIRED_HEADERS = [
     "| 指标 | 本月实际 | 上月实际 | 环比变动 | 去年同月 | 同比变动 | 预算值 | 预算偏差 |",
     "| 成本要素 | 金额(元/盒) | 占比 | 环比变动 | 贡献度 |",
@@ -47,6 +56,58 @@ REQUIRED_HEADERS = [
     "| 任务编号 | 任务标题 | 责任人 | 优先级 | 来源 | 截止时间 |",
     "| 序号 | 建议事项 | 责任部门 | 优先级 | 预期效果 | 建议完成时间 |",
 ]
+
+REQUIRED_HEADERS_QUARTERLY = [
+    "| 指标 | 本季实际 | 上季实际 | 环比变动 | 去年同期 | 同比变动 | 预算值 | 预算偏差 |",
+    "| 成本要素 | 金额(元/盒) | 占比 | 环比变动 | 贡献度 |",
+    "| 月份 | 产量(盒) | 单位材料(元/盒) | 单位人工(元/盒) | 单位制造费用(元/盒) | 单位成本(元/盒) | 环比变动 |",
+    "| 序号 | 原材料名称 | 本季单价(元/盒) | 上季单价(元/盒) | 环比变动 | 变动原因初步判断 |",
+    "| 指标 | 本季 | 上季 | 环比 | 说明 |",
+    "| 任务编号 | 任务标题 | 责任人 | 优先级 | 来源 | 截止时间 |",
+    "| 序号 | 建议事项 | 责任部门 | 优先级 | 预期效果 | 建议完成时间 |",
+]
+
+REQUIRED_HEADERS_TOPIC = [
+    "| 指标 | 本期 | 对比期 | 变动 | 说明 |",
+    "| 月份 | {} | 环比变动 | 占总成本比 |",   # {} 为专题名称，占位比对
+    "| 对比维度 | 中药一厂 | 中药二厂 | 差异 | 差异率 |",
+    "| 任务编号 | 任务标题 | 责任人 | 优先级 | 来源 | 截止时间 |",
+    "| 序号 | 建议事项 | 责任部门 | 优先级 | 预期效果 | 建议完成时间 |",
+]
+
+
+def detect_theme(text: str) -> str:
+    """
+    从正文识别分析主题。**按各主题独有的表头/措辞判定**，不猜文件名。
+
+    判定顺序有意从最特异到最一般：季度有"本季实际"、专题有"| 本期 | 对比期 |"，
+    两者都不匹配则视为月度。
+    """
+    if "本季实际" in text:
+        return "quarterly"
+    if "| 本期 | 对比期 |" in text:
+        return "topic"
+    return "monthly"
+
+
+def headers_for(theme: str) -> list[str]:
+    return {"monthly": REQUIRED_HEADERS,
+            "quarterly": REQUIRED_HEADERS_QUARTERLY,
+            "topic": REQUIRED_HEADERS_TOPIC}.get(theme, REQUIRED_HEADERS)
+
+
+def chapters_for(theme: str) -> list[str]:
+    """专题是另一套六章结构；月/季度同构（季度只是换了期间措辞）。"""
+    return REQUIRED_CHAPTERS_TOPIC if theme == "topic" else REQUIRED_CHAPTERS
+
+
+def _header_present(h: str, text: str) -> bool:
+    """专题表头带 `{}` 占位（专题名称），按前两列匹配。"""
+    if "{}" in h:
+        prefix = h.split("{}")[0]
+        return any(line.startswith(prefix) for line in text.split("\n"))
+    return h in text
+
 
 # 契约 §8 第 5 条 / SKILL 硬约束：不得出现的错误编号
 FORBIDDEN = [
@@ -68,15 +129,22 @@ def main() -> int:
     bad: list[str] = []
     ok: list[str] = []
 
-    # 1 章齐全
-    miss = [c for c in REQUIRED_CHAPTERS if c not in t]
-    (bad if miss else ok).append(
-        f"[§8.3 不得删减章节] {'缺失: ' + ', '.join(miss) if miss else '6 章齐全'}")
+    # 0 识别主题（表头随主题而变，识别错会把合规报告误报成表头被改）
+    theme = detect_theme(t)
+    THEME_ZH = {"monthly": "月度", "quarterly": "季度", "topic": "专题"}
+    ok.append(f"[主题] 按「{THEME_ZH[theme]}」模板校验表头")
 
-    # 2 表头未改动
-    badh = [h for h in REQUIRED_HEADERS if h not in t]
+    # 1 章齐全（月/季度同构；专题另有一套六章）
+    req_ch = chapters_for(theme)
+    miss = [c for c in req_ch if c not in t]
+    (bad if miss else ok).append(
+        f"[§8.3 不得删减章节] {'缺失: ' + ', '.join(miss) if miss else f'{len(req_ch)} 章齐全'}")
+
+    # 2 表头未改动（用**该主题**的表头清单）
+    badh = [h for h in headers_for(theme) if not _header_present(h, t)]
     (bad if badh else ok).append(
-        f"[§8.4 不得改动表头] {'被改动 ' + str(len(badh)) + ' 处' if badh else '全部保留'}")
+        f"[§8.4 不得改动表头] "
+        f"{'被改动 ' + str(len(badh)) + ' 处: ' + ' / '.join(x[:40] for x in badh) if badh else '全部保留'}")
 
     # 3 无残留占位符
     ph = re.findall(r"\{\{[^}]+\}\}", t)
@@ -112,11 +180,15 @@ def main() -> int:
         bad.append("[RPA] 未找到整改任务行（第六章应有 {{整改任务表格}}）")
 
     # 6 三要素行的同比两列应为 —
-    seg = t.split("| 其中：直接材料")[1].split("\n")[0] if "| 其中：直接材料" in t else ""
-    if "| — | — |" in seg:
-        ok.append("[模板口径] 三要素行「去年同月/同比」保留固定 —")
+    # ⚠️ 只有月/季度模板有这张「成本结构」表（专题不设，故不计入）。
+    if theme == "topic":
+        ok.append("[模板口径] 专题模板无三要素行，跳过该项")
     else:
-        bad.append("[模板口径] 三要素行应有固定的 `— | —` 两列")
+        seg = t.split("| 其中：直接材料")[1].split("\n")[0] if "| 其中：直接材料" in t else ""
+        if "| — | — |" in seg:
+            ok.append("[模板口径] 三要素行「去年同月/同比」保留固定 —")
+        else:
+            bad.append("[模板口径] 三要素行应有固定的 `— | —` 两列")
 
     print("=" * 72)
     print(f"报告合规性检查  {p.name}")

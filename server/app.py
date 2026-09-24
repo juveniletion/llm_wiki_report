@@ -1953,9 +1953,14 @@ def rpa_dispatch(body: DispatchIn, authorization: str = Header(default=""), lw_s
     _whoami(authorization, lw_sid)
     import rpa_client
 
-    src = REPORTS / Path(body.report).name
-    if not src.exists():
-        raise HTTPException(404, f"报告不存在：{src.name}")
+    # 同 control_export：空 `report` 会让 `REPORTS / ""` 退化成目录本身，
+    # 只查 exists() 会放行、随后读目录崩成 500。先挡空名、再判 is_file()。
+    name = Path(body.report).name
+    if not name:
+        raise HTTPException(400, "缺少报告文件名（report 字段）")
+    src = REPORTS / name
+    if not src.is_file():
+        raise HTTPException(404, f"报告不存在：{name}")
 
     payloads = rpa_client.RPAClient.parse_report_tasks(
         src.read_text(encoding="utf-8"), body.month, body.product)

@@ -1,4 +1,4 @@
-/* 制药成本分析看板 —— React 18（UMD，本地 vendor）+ htm 模板
+/* 基于 llm-wiki 的智能分析面板 —— React 18（UMD，本地 vendor）+ htm 模板
  *
  * ⚠️ 本文件**面向最终使用者**。
  *    不出现内部实现术语：文件路径、脚本名、数据库、原始资料目录结构……
@@ -217,10 +217,10 @@ function LoginPage({ onAuthed, onGuest, notice = "" }) {
     <div class="loginpage">
       <div class="loginbox">
         <div class="login-brand">
-          <div class="mark">成</div>
+          <div class="mark">析</div>
           <div>
-            <h1>制药成本分析</h1>
-            <div class="sub">中药一厂 · 成本智能分析系统</div>
+            <h1>基于 llm-wiki 的智能分析面板</h1>
+            <div class="sub">制药企业成本智能分析 · 知识可溯</div>
           </div>
         </div>
 
@@ -1912,7 +1912,7 @@ function HeroAsk({ me, onNeedLogin, onAuthed }) {
   if (!me) {
     return html`
       <section class="hero">
-        <h1 class="hero-title">制药成本分析</h1>
+        <h1 class="hero-title">基于 llm-wiki 的智能分析面板</h1>
         <p class="hero-sub">问一句，每个数字都带你回到它的出处。</p>
         <${LoginGate} what="智能问答（查的是你自己的数据区）"
                       onGoLogin=${onNeedLogin} />
@@ -1921,7 +1921,7 @@ function HeroAsk({ me, onNeedLogin, onAuthed }) {
 
   return html`
     <section class="hero">
-      <h1 class="hero-title">制药成本分析</h1>
+      <h1 class="hero-title">基于 llm-wiki 的智能分析面板</h1>
       <p class="hero-sub">问一句，每个数字都带你回到它的出处。</p>
 
       <div class="conv-bar">
@@ -2850,10 +2850,10 @@ function App() {
       <div class="wrap">
         <div class="brandrow">
           <div class="brand">
-            <div class="mark">成</div>
+            <div class="mark">析</div>
             <div>
-              <h1>制药成本分析</h1>
-              <div class="sub">中药一厂 · 成本智能分析系统</div>
+              <h1>基于 llm-wiki 的智能分析面板</h1>
+              <div class="sub">制药企业成本智能分析 · 知识可溯</div>
             </div>
           </div>
           ${who}

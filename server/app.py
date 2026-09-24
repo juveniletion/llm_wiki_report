@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-app.py — 制药成本分析**看板后端**（FastAPI，只读）
+app.py — **基于 llm-wiki 的智能分析面板**后端（FastAPI，只读）
 
 设计原则
 --------
@@ -52,7 +52,7 @@ sys.path.insert(0, str(WIKI_ROOT / "scripts"))
 import report_facts as RF  # noqa: E402
 from errors import AgentError, ConfigError, DataMissing  # noqa: E402
 
-app = FastAPI(title="制药成本分析看板 API", version="1.0.0",
+app = FastAPI(title="基于 llm-wiki 的智能分析面板 API", version="1.0.0",
               description="只读。数据来自 llm-wiki 知识库（证据可溯）。")
 
 
@@ -1986,7 +1986,7 @@ if STATIC.exists():
 def main() -> int:
     import argparse
     import uvicorn
-    ap = argparse.ArgumentParser(description="制药成本分析看板后端（只读）")
+    ap = argparse.ArgumentParser(description="基于 llm-wiki 的智能分析面板 后端（只读）")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--reload", action="store_true",

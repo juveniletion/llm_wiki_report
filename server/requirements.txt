@@ -1,0 +1,18 @@
+# 看板后端依赖（前端已 vendor，无需 npm / 无需构建步骤）
+#
+# 启动：
+#   pip install -r server/requirements.txt
+#   python server/app.py            # → http://127.0.0.1:8765/
+#
+# 国内网络建议加镜像：
+#   pip install -r server/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+fastapi>=0.110
+uvicorn[standard]>=0.27
+
+# 说明：看板复用 scripts/report_facts.py 取数，因此运行看板还需要
+# 知识库本身的依赖（见工作区根的 requirements.txt，主要是 langchain-openai /
+# dotenv 等）。但**看板的只读端点不调用任何 LLM**——只有 /api/search
+# 在向量检索时才可能需要联网，那部分失败会优雅降级并在响应里带 error 字段。
+
+# 图表重绘（导出 Word/PDF 时嵌图，见 scripts/chart_render.py）
+matplotlib>=3.8

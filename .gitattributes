@@ -1,0 +1,71 @@
+# 换行符策略 —— 全仓统一 LF
+#
+# 为什么需要这个文件（本库踩过的真实事故）
+# -----------------------------------------
+# 本机 `core.autocrlf = true`，checkout 时把仓库里的 LF 全变成工作区的 CRLF。
+# 而项目里的编辑工具是"读 bytes → 裸 decode → 改 → write_text"，
+# `write_text` 默认 `newline=None`，写回时又把 `\n` 翻成 `\r\n`——
+# **读不改写、写又翻一次**，于是每次编辑都在每行末尾多留一个 `\r`：
+#
+#     第 1 次 patch → `\r\n`    第 2 次 → `\r\r\n`    第 9 次 → `\r×8\n`
+#
+# 一次摄入做了 9 次编辑后，195 行的词条在 `\n` 视角下变成 1300 行，
+# `state.py` 的表格解析整段失效，关键数值从 555 条**静默**掉到 339 条。
+# 不报错、文件能打开、肉眼看着正常——只有 diff 和抽数会露馅。
+#
+# 解法分两层，缺一不可：
+#   1. `.gitattributes`（本文件）：让仓库与**检出到工作区的文件**都是 LF，
+#      消除"读写不对称"的土壤。
+#   2. 代码里显式 `newline="\n"`：不依赖任何全局 git 配置，双保险。
+#
+# 详见 `scripts/fix_newlines.py` 与 `scripts/check_evidence.py` 的 [7] 节。
+
+# ---- 默认：一律按文本处理，检出为 LF，提交为 LF ----
+* text=auto eol=lf
+
+# ---- 明确的文本类型（防止被误判为二进制而跳过规范化）----
+*.md    text eol=lf
+*.txt   text eol=lf
+*.py    text eol=lf
+*.json  text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.sql   text eol=lf
+*.csv   text eol=lf
+*.toml  text eol=lf
+*.cfg   text eol=lf
+*.ini   text eol=lf
+.gitignore      text eol=lf
+.gitattributes  text eol=lf
+
+# ---- Windows 专用脚本保持 CRLF（否则某些解释器会出怪问题）----
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# ---- 真正的二进制：禁止任何换行符转换（转换会损坏文件）----
+*.pdf   binary
+*.docx  binary
+*.xlsx  binary
+*.xls   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.zip   binary
+*.gz    binary
+*.db    binary
+*.sqlite binary
+*.woff  binary
+*.woff2 binary
+
+# ---- 派生数据 ----
+# `.index/` 是向量缓存（数 MB 的浮点数组），纯再生品，diff 无意义 → 屏蔽。
+*/.index/*           binary
+
+# ⚠️ 注意 `state/metrics.json` **刻意不设 `-diff`**。
+#    它虽是派生视图，但按设计**故意纳入版本管理**——因为它的 diff
+#    **就是"关键数值变化历史"**，是本库的审计资产。
+#    文件用 `indent=1` 序列化（每条指标约 13 行），所以普通文本 diff
+#    会整块显示"哪条指标、从多少变到多少"，正是我们要的可读性。
+#    （设了 `-diff` 反而会把它压成 "Binary files differ"，把审计价值藏起来。）

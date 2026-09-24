@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>制药成本分析看板 · llm-wiki</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div id="root"></div>
+
+<!--
+  ⚠️ 本地 vendor 版 React（无 npm、无构建步骤）。
+     原因：本机 npm 已损坏（PATH 里 `npm` 指向不存在的 /f/npm，
+     且用户级 ~/.npmrc 的 cache 值是单字符 `E`），无法 install。
+     直接 vendor UMD 构建反而更适合本仓库——**克隆即可运行**：
+       pip install fastapi uvicorn && python server/app.py
+     `htm` 提供 JSX 式模板语法（1.4KB），无需 Babel。
+-->
+<script src="/static/vendor/react.js"></script>
+<script src="/static/vendor/react-dom.js"></script>
+<script src="/static/vendor/htm.js"></script>
+<!-- ECharts（赛题硬性要求）。与 React 一样本地 vendor，无 CDN 依赖。 -->
+<script src="/static/vendor/echarts.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,244 @@
+# =============================================================================
+# pharma-cost-wiki 机器可读 Schema
+# -----------------------------------------------------------------------------
+# 用途：供「摄入 agent」冷启动时读取。agent 无长期记忆，每次运行靠本文件
+#       与 词条骨架.md / 命名与链接约定.md / ../../SKILL.md 重建全部规则。
+#
+# 关系：SKILL.md = 规则层（人类可读的完整叙述，权威）
+#       本文件   = 结构化摘要（机器可读，便于 agent 快速装配）
+#       两者冲突时，以 SKILL.md 为准。
+#
+# 版本：1.0   最后更新：2026-09-22
+# =============================================================================
+
+version: 1.0
+
+# -----------------------------------------------------------------------------
+# 一、路径契约
+# -----------------------------------------------------------------------------
+paths:
+  wiki_root: "."                    # pharma-cost-wiki/
+  raw:          "raw"               # 不可变源材料层
+  wiki:         "wiki"              # 编译知识层
+  index:        "wiki/index.md"     # 全局索引（ingest 后必须更新）
+  log:          "wiki/log.md"       # 追加密操作日志
+  article_tmpl: "references/词条骨架.md"
+  naming_doc:   "references/命名与链接约定.md"
+  evidence_ck:  "scripts/check_evidence.py"
+  inbox:        "inbox"             # 待摄入投放区（§ hook）
+
+# -----------------------------------------------------------------------------
+# 二、raw/ 层契约
+# -----------------------------------------------------------------------------
+raw:
+  # 权威件：不可变，禁止修改/重命名/删除
+  authoritative_ext:
+    - .csv
+    - .pdf
+    - .md
+    - .py
+    - .docx
+    - .xlsx
+    - .xls
+    - .txt
+    - .json
+    - Dockerfile
+
+  # 派生缓存：由权威件生成，可重新生成（存在理由是"二进制不可 grep"）
+  derived:
+    generate_for: [.pdf, .docx, .xlsx, .xls]   # 这些格式必须生成同名派生文本
+    suffix: ".txt"
+    must_be_greppable: true
+    conflict_rule: "冲突时一律以权威件为准"
+
+  # 主题目录（既有，冻结）。新增文件必须落进其中之一；确实新领域才建新目录
+  topics:
+    csv/cost_data:        "成本明细数据（成本汇总/原材料/制造费用/人工工时/预算）"
+    csv/market_data:      "行情与行业基准（药材价格、行业分位）"
+    pdf/pharma_docs:      "制药知识 PDF（配方/工艺/设备/GMP）"
+    templates:            "报告模板"
+    rpa:                  "RPA 接口文档与 mock 服务"
+    meta:                 "数据集元信息（README、问题检查报告）"
+    docs:                 "其他文档（md/docx/txt 等无明确归属者）"
+    tabular:              "其他表格（xlsx/xls 等无明确归属者）"
+
+# -----------------------------------------------------------------------------
+# 三、wiki/ 层契约
+# -----------------------------------------------------------------------------
+wiki:
+  # 主题目录 → 对应的词条骨架类型（见 词条骨架.md）
+  topics:
+    products:
+      skeleton: A
+      purpose: "产品配方与工艺"
+      use_when: "内容主体是某个产品的处方/工艺/物料"
+    costs:
+      skeleton: "B'"
+      purpose: "成本数据口径、基线、异动（**关于成本的知识**，不是逐月报告）"
+      use_when: "内容是关于成本的结构、口径、机制、核验结论"
+      forbid: "不得存放逐月成本分析报告——那属 Query→Archive"
+    equipment:
+      skeleton: C
+      purpose: "设备与车间"
+      use_when: "内容是设备台账、折旧、维修历史"
+    market:
+      skeleton: D
+      purpose: "行情与行业基准"
+      use_when: "内容是外部参照系（药材行情、行业分位）"
+    gmp:
+      skeleton: E
+      purpose: "GMP 法规与质量管理"
+      use_when: "内容是法规条款及其成本关联"
+    benchmarking:
+      skeleton: F
+      purpose: "对标分析"
+      use_when: "内容是一厂 vs 二厂或其他横向对比"
+    interfaces:
+      skeleton: G
+      purpose: "对外契约（RPA 接口、报告模板等系统交互面）"
+      use_when: "内容是接口/契约/字段映射"
+
+  # 词条元数据（每篇必填；缺失即 Lint 报错）
+  article_metadata_required:
+    - 所属分类        # 格式：<大类> / <子类>
+    - 实体类型        # 公司/产品/数据集/概念/分析/法规/契约/设备资产
+    - 信息截点        # 内容对应的事实截止日（YYYY-MM-DD 或 YYYY-MM）
+    - 信源摘要        # <文档名>, <版本>, <日期>
+    - Raw             # markdown 链接，列出该文用到的**全部** raw 文件
+    - 最后编译        # 知识内容最后变化日；改错别字/调格式不刷新
+
+  article_metadata_archive:
+    - 引用            # 归档页：指向被引词条
+    - 归档            # 归档页：归档日期
+    note: "归档页**无 Raw 字段**（内容来自综合问答）；永不参与级联更新"
+
+  naming:
+    pattern: '^[^\\/:*?"<>|\r\n]+\.md$'    # 中文/英文概念名，不得含路径分隔符与非法字符
+    forbit_date_prefix: true               # ❌ 2026-05-金银花超支.md
+    forbit_nesting_deeper_than: 1          # wiki/<topic>/<article>.md 仅一层
+    style: "同一 topic 内风格一致；本库统一中文概念名"
+
+  status_blocks:
+    types: [Outdated, Disputed]
+    Outdated:
+      required: ["日期 (YYYY-MM-DD)", "什么变了 + 当前理解 + 坐标"]
+    Disputed:
+      required: ["竞争主张各方", "每方坐标", "工程判定：采信哪方及理由"]
+    rule: "永不静默删除或改写已被推翻的断言"
+
+  # ⭐⭐ 冲突扫描 —— 编译前的**强制义务**（详见 SKILL.md 5.3.1）
+  # 为什么是义务而非脚本：同一指标不同值可能是四种情况，区分它们需要语义理解。
+  # 本库实测：正则扫全部文件 → 满屏假冲突；加了"时点必须相同" → 又挡住真矛盾。
+  conflict_scan:
+    when: "每次编译词条之前（No material 除外，但也须在 log 说明原因）"
+    mandatory: true
+    tool: cross_check_metric
+    scope: "raw/ **全部**文件，不只看本次的源 —— 矛盾多半在「新数据 vs 既有数据」之间"
+    steps:
+      - "列出本次将写入数值的**核心指标**"
+      - "对每个指标调 cross_check_metric（查全库）"
+      - "对每个命中做四分类判读"
+      - "按判定落笔（见下）"
+      - "在 log 记一行「冲突扫描: 检查了 N 个指标，发现 M 处候选，判定 K 处为真冲突」"
+    classification:
+      # ① ② 要写 Status 块；③ ④ **不要**写（否则污染库）
+      real_contradiction:
+        label: "① 真矛盾"
+        example: "一处 8,500，另一处 5,800"
+        action: "写 Status: Disputed"
+      definition_mismatch:
+        label: "② 口径差异"
+        example: "定额 1.72 vs 实际 1.48~1.55"
+        action: "写 Status: Disputed，并说明是哪种口径差异"
+      period_diff:
+        label: "③ 时点差异"
+        example: "1月 6.83 vs 2月 6.92"
+        action: "**不是矛盾** —— 分别列出即可，不要标 Disputed"
+      entity_diff:
+        label: "④ 主体差异"
+        example: "一厂 11.21 vs 二厂 11.60"
+        action: "**不是矛盾** —— 标明主体分别列出"
+      undecidable:
+        label: "无法判定"
+        action: "写 Status: Disputed，在工程判定里写明**为何无法判定** + 需补什么数据"
+    known_cases:
+      # 本库历史上只有靠跨来源比对才发现的矛盾（供参照，均已登记）
+      - "银黄工艺人工：工艺文档定额 1.72 vs 成本表实际 1.48~1.55（PDF vs CSV，标注方式不同）"
+      - "官方涨幅：README「涨 12%」vs 行情序列算得 +11.29%（官方是概略表述，只有复算才暴露）"
+      - "GMP 章节区间：摘要标注 vs 全文实际统计（只有逐章数一遍才发现 11/13 章不符）"
+      - "折旧率：文档声明 0.7917% vs 表格实际 0.8333%（只有反推表格数值才发现）"
+
+# -----------------------------------------------------------------------------
+# 四、链接约定  ⭐ 曾因深度写错产生死链，务必按本表
+# -----------------------------------------------------------------------------
+links:
+  # 从 wiki/<topic>/<article>.md 出发
+  from_topic_article:
+    to_raw:          "../../raw/<sub>/<file>"        # 两级：topic → wiki → root
+    to_same_topic:   "./<other>.md"                  # 同级
+    to_cross_topic:  "../<other-topic>/<other>.md"   # 一级
+    to_index:        "../index.md"
+    to_log:          "../log.md"
+  # 从 wiki/index.md 或 wiki/log.md 出发（与 topic 文章**不同**）
+  from_wiki_root:
+    to_article:      "./<topic>/<article>.md"
+    to_raw:          "../raw/<sub>/<file>"
+  from_root_doc:
+    to_wiki:         "./wiki/..."
+    to_raw:          "./raw/..."
+  in_conversation: "项目根相对路径，如 wiki/costs/xxx.md"
+
+  # 行内证据坐标（与链接并存，非替代）
+  citation:
+    csv: "[文件名.csv:列名:筛选条件]"
+    pdf: "[文件名.pdf:P页码:章节名]"
+    cross_file: "[文件A.csv:列X] + [文件B.pdf:P页码]"
+
+# -----------------------------------------------------------------------------
+# 五、Ingest 流程（五步，详见 ../../SKILL.md 第五节）
+# -----------------------------------------------------------------------------
+ingest:
+  steps: [采集, 分诊, 编译, 级联, 收尾]
+  dispositions: [New, Update, Disputed, No material]
+  note: "No material 是一等公民结果；不得硬凑词条"
+
+  log_entry:
+    new: |
+      ## [YYYY-MM-DD] ingest | <主词条标题>
+      - Disposition: <New; Update; Disputed>
+      - Raw: raw/<topic>/<file>
+      - Updated: <被级联更新的词条标题>
+    no_material: |
+      ## [YYYY-MM-DD] ingest | no material: raw/<topic>/<file>
+      - Disposition: No material
+    machine_key: "`ingest | no material:` 的措辞不得改动（机器读取用）"
+
+# -----------------------------------------------------------------------------
+# 六、铁律摘要（完整版见 SKILL.md 第二、三、九、十节）
+# -----------------------------------------------------------------------------
+invariants:
+  - "严禁截断数值精度（补零允许）"
+  - "严禁擅自单位换算（元/盒 与 元/支|袋|粒 必须原样并列）"
+  - "严禁推算补全——缺失须标【数据缺失: 该文件中未包含此项】"
+  - "派生值必须展示公式，每部分可回溯到 raw"
+  - "先定位后书写：写任何数字前必须已在 raw 中 grep 到它"
+  - "权威件不可变；派生缓存可再生"
+  - "不并行编译（index/log 是共享状态，串行执行）"
+  - "Query 永不写文件（除非人类明确要求归档）"
+
+# -----------------------------------------------------------------------------
+# 七、Hook 接口（可扩展点，供网站拖拽/管理后台接入）
+# -----------------------------------------------------------------------------
+hook:
+  entry: "scripts/ingest_raw.py"
+  callable: "ingest_file(source, *, filename=None, topic=None, hooks=None) -> IngestResult"
+  # 三种入口共用同一函数，保证行为一致
+  entrypoints:
+    cli:        "python scripts/ingest_raw.py <file> [--topic X]"
+    inbox_watch:"python scripts/ingest_raw.py --inbox"
+    programmatic:"from ingest_raw import ingest_file   # 网站上传 / 管理后台调用"
+  hook_points:
+    on_collected: "采集完成（raw 已落位）→ 可触发编译、通知前端"
+    on_skipped:   "内容哈希重复 → 已跳过"
+    on_error:     "解析失败"
+  contract: "hook 只接收 IngestResult，不得修改 raw/；失败不影响已落盘结果"

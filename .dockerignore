@@ -1,0 +1,49 @@
+# 构建上下文裁剪 —— 让镜像只带**运行必需**的东西
+#
+# 为什么重要：`COPY` 之前 Docker 会把整个目录当上下文发给守护进程。
+# 本目录下有 3.5MB 的向量缓存与多份 __pycache__，白白拖慢构建、撑大镜像。
+
+# ---- 派生缓存（可再生，且平台相关）----
+.index/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# ---- 本机数据库（含对话记忆，**绝不能进镜像**）----
+state/*.db
+state/*.db-wal
+state/*.db-shm
+*.sqlite
+*.sqlite3
+
+# ---- 密钥（.env 绝不进镜像，运行时用 -e / env_file 注入）----
+.env
+.env.*
+*.key
+*.pem
+
+# ---- 版本控制与编辑器 ----
+.git/
+.gitignore
+.gitattributes
+.github/
+.vscode/
+.idea/
+
+# ---- 开发期产物 ----
+inbox/
+raw/.hashes.json
+raw/.ingest-audit.jsonl
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 测试/示例（不影响运行）----
+**/test_*.py
+**/*_test.py
+
+# ---- 嵌套仓库（如果工作区被整体当上下文）----
+node_modules/
+.venv/
+venv/

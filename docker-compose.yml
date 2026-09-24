@@ -1,0 +1,60 @@
+# pharma-cost-wiki —— 一键部署
+#
+#   docker compose up -d          启动（后台）
+#   docker compose logs -f        看日志
+#   docker compose down           停止（**保留记忆卷**）
+#   docker compose up -d --build  改代码后重建
+#
+# 访问 http://127.0.0.1:8765/
+#
+# ⚠️ 若所在网络有本地代理（本机就有 HTTP_PROXY=127.0.0.1:5479），
+#    Docker 构建/运行时**不要**让它去走该代理——容器里的 127.0.0.1 是容器自己。
+#    本项目默认不配代理即可。
+
+services:
+  wiki-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pharma-cost-wiki:latest
+    container_name: pharma-cost-wiki
+    restart: unless-stopped
+
+    ports:
+      # 只绑本机回环：默认不对局域网暴露。
+      # 要给别人看，改成 "8765:8765"（或前面加反代做鉴权）。
+      - "127.0.0.1:8765:8765"
+
+    # ⚠️ 关键：`.env` 必须**显式指定路径**。
+    #    踩过的坑：Compose 只在**本 compose 文件所在目录**找 `.env`，
+    #    而本项目的 `.env` 在工作区根目录（三层之上）。
+    #    只写 ${VAR} 插值的话，值全是空的——更隐蔽的是，带 `:-默认值` 的
+    #    变量会**悄悄用上默认值**（如 BASE_URL 显示得像配好了），
+    #    让人以为注入成功，直到真去对话才发现没有 Key。
+    env_file:
+      - path: ../../../.env
+        required: false        # 没有 .env 时不报错（纯看板无需 Key）
+
+    environment:
+      # 记忆库位置 —— 指向下面的卷。**这是权威区，不可重建。**
+      LLM_WIKI_DB: /data/llm-wiki.db
+      # 中文输出、无缓冲，日志才实时
+      PYTHONUNBUFFERED: "1"
+
+    volumes:
+      # ⭐ 记忆卷。命名卷而非绑定挂载——Docker 管理生命周期，
+      #    `docker compose down` 不会删它（只有 `down -v` 才删）。
+      #    这就是"镜像重建但对话记忆存活"的实现。
+      - wiki-memory:/data
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/api/health',timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  wiki-memory:
+    name: pharma-cost-wiki-memory

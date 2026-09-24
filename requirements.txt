@@ -1,0 +1,44 @@
+# pharma-cost-wiki 运行依赖
+#
+# 版本按本机实测锁定（`pip freeze` 快照，2026-09-23），
+# 用 `>=` 下限而非 `==` 精确锁定——避免小版本安全更新把人卡住。
+#
+# 安装：
+#   pip install -r requirements.txt
+# 国内网络：
+#   pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# ---- Web 服务（看板）----
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.9
+
+# ---- Agent 运行时 ----
+langchain-openai>=1.0
+langchain-core>=1.0
+langgraph>=1.0
+httpx>=0.27
+
+# ---- 配置 ----
+python-dotenv>=1.0
+
+# =============================================================================
+# 说明：**本文件只列部署必需项**。下列能力有则增强、无则优雅降级：
+#
+#   · 混合检索的向量侧（`retrieval.py`）需要联网调 SiliconFlow 的
+#     `BAAI/bge-m3`。无网/无 Key 时自动退回纯 BM25，功能不中断。
+#     （不引入 sentence-transformers——它会拖进 torch，镜像体积翻十倍，
+#       而本项目检索的向量部分走 HTTP API，不需要本地推理。）
+#
+#   · PDF 解析在**摄入侧**才需要（pypdf 等）。看板/问答/报告生成都不需要，
+#     因为 raw/ 里已经带着预先生成的 .txt 派生文本。
+#     要跑摄入的话另装：pip install pypdf python-docx openpyxl
+# =============================================================================
+
+# ---- 图表（导出文档时重绘，见 scripts/chart_render.py）----
+#
+# 为什么需要它：看板的图是 ECharts 画在 canvas 上的，python-docx 拿不到，
+# 导出的 Word 里图片数是 0。而赛题 5.1.3 明确要求「图表嵌入」。
+# 服务端用**同一份数据**重绘，导出就成了完全独立的确定性产物——
+# 不依赖"当时有个浏览器开着"。
+matplotlib>=3.8

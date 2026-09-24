@@ -12,6 +12,14 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
 pydantic>=2.9
+# ⚠️ FastAPI 处理 `File()` / `Form()` / `UploadFile` 需要它，**且不在 fastapi 的
+#    依赖里**（是可选依赖，不写就不会装）。
+#    少了它的报错发生在**启动时**（app.py 注册 /api/control/upload 时）：
+#        RuntimeError: Form data requires "python-multipart" to be installed.
+#    ⇒ **整个服务起不来**，不是"上传功能不可用"。
+#    本机一直没暴露，是因为 venv 里恰好有这个包（多半由别的包间接带入）；
+#    干净镜像里没有 → 容器进入崩溃重启循环。这正是"本机能跑"掩盖的问题。
+python-multipart>=0.0.9
 
 # ---- Agent 运行时 ----
 langchain-openai>=1.0

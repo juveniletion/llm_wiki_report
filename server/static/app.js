@@ -1102,6 +1102,159 @@ function inline(s) {
 }
 
 /* =============================================================================
+ * 对话里的 markdown 渲染
+ *
+ * 为什么需要：大模型的回答**本来就是 markdown**（标题、表格、列表、代码、粗体），
+ * 但原先消息体是 `${m.content}` 直出 + CSS `white-space: pre-wrap`——
+ * 于是用户看到的是**带 `|` 和 `##` 的源码**，而不是排好版的文档。
+ * 我们的回答动辄带三张对齐的表格，纯文本根本没法读。
+ *
+ * 设计取舍
+ * --------
+ * ① **不引第三方 markdown 库**。本项目前端是 vendor 版、无构建步骤，
+ *    引一个 md 库要么加文件、要么走 CDN（而我们刻意不依赖 CDN）。表格 +
+ *    标题 + 列表 + 粗体/代码 已覆盖本场景 99%，自己写反而可控。
+ * ② **安全**：输出走 `dangerouslySetInnerHTML`，所以**必须**先转义 HTML。
+ *    转义放在最前，之后只由本函数插入受控标签——模型输出里的 `<script>`
+ *    进不来。链接另外只允许 http/https，挡掉 `javascript:`。
+ * ③ **导出**：长回答要能存成本地 .md。所以额外提供
+ *    `markdownToPlain()` 与下载按钮（见 Chat 里）——**导出的仍是原始
+ *    markdown 源码**，不是渲染后的 HTML（.md 文件就该是源码）。
+ * ========================================================================== */
+
+function _escHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+/* 行内：转义后按 `代码` / **粗体** / *斜体* / [文字](链接) 处理 */
+function _mdInline(s) {
+  return _escHtml(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, text, url) =>
+      /^https?:\/\//i.test(url)
+        ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`
+        : text);
+}
+
+/*
+ * markdown → 受控 HTML 字符串。
+ * 支持：`#`~`####` 标题、`|` 表格、`-`/`*`/数字 列表、``` 代码块、
+ *       `>` 引用、`---` 分隔线、段落与单换行。
+ */
+function markdownToHtml(src) {
+  const lines = String(src == null ? "" : src).replace(/\r\n?/g, "\n").split("\n");
+  const out = [];
+  let i = 0;
+
+  const cellsOf = (line) => line.replace(/^\s*\|/, "").replace(/\|\s*$/, "")
+                               .split("|").map(c => c.trim());
+  const isSep = (line) => /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(line) && line.includes("-");
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // --- 代码块 ---
+    if (/^\s*```/.test(line)) {
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) buf.push(lines[i++]);
+      i++; // 收尾的 ```
+      out.push(`<pre><code>${_escHtml(buf.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    // --- 表格：当前行含 |，下一行是分隔行 ---
+    if (line.includes("|") && i + 1 < lines.length && isSep(lines[i + 1])) {
+      const head = cellsOf(line);
+      i += 2;
+      const body = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) {
+        body.push(cellsOf(lines[i++]));
+      }
+      const th = head.map(c => `<th>${_mdInline(c)}</th>`).join("");
+      const tr = body.map(r =>
+        `<tr>${r.map(c => `<td>${_mdInline(c)}</td>`).join("")}</tr>`).join("");
+      out.push(`<div class="md-table-wrap"><table><thead><tr>${th}</tr></thead>` +
+               `<tbody>${tr}</tbody></table></div>`);
+      continue;
+    }
+
+    // --- 标题 ---
+    let m = line.match(/^(#{1,4})\s+(.*)$/);
+    if (m) {
+      const lv = m[1].length + 2;          // # → h3（h1/h2 留给页面本身）
+      out.push(`<h${lv}>${_mdInline(m[2])}</h${lv}>`);
+      i++;
+      continue;
+    }
+
+    // --- 分隔线 ---
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) { out.push("<hr/>"); i++; continue; }
+
+    // --- 引用 ---
+    if (/^\s*>\s?/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        buf.push(lines[i].replace(/^\s*>\s?/, ""));
+        i++;
+      }
+      out.push(`<blockquote>${buf.map(_mdInline).join("<br/>")}</blockquote>`);
+      continue;
+    }
+
+    // --- 列表（无序 / 有序）---
+    if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
+      const ordered = /^\s*\d+\.\s+/.test(line);
+      const items = [];
+      while (i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i])) {
+        items.push(_mdInline(lines[i].replace(/^\s*([-*+]|\d+\.)\s+/, "")));
+        i++;
+      }
+      const tag = ordered ? "ol" : "ul";
+      out.push(`<${tag}>${items.map(t => `<li>${t}</li>`).join("")}</${tag}>`);
+      continue;
+    }
+
+    // --- 空行 ---
+    if (!line.trim()) { i++; continue; }
+
+    // --- 段落：连续非空、非结构行合成一段；单换行转 <br/> ---
+    const buf = [];
+    while (i < lines.length && lines[i].trim()
+           && !/^\s*(#{1,4}\s|>|```|([-*+]|\d+\.)\s)/.test(lines[i])
+           && !(lines[i].includes("|") && i + 1 < lines.length && isSep(lines[i + 1]))) {
+      buf.push(lines[i]);
+      i++;
+    }
+    out.push(`<p>${buf.map(_mdInline).join("<br/>")}</p>`);
+  }
+  return out.join("");
+}
+
+/* 长回答才给导出按钮：这条阈值决定"多长算长"。
+   太短的回答导出成文件没意义（一句话一个 .md 很滑稽）。 */
+const MD_EXPORT_MIN_CHARS = 400;
+
+/* 触发浏览器下载：把原始 markdown 存成本地 .md */
+function downloadMarkdown(content, idx) {
+  const ts = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const name = `对话回答_${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}`
+             + `_${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}`
+             + (idx ? `_${idx}` : "") + ".md";
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/* =============================================================================
  * 页签：对标分析（三步法 · 赛题模块三）
  *
  * 赛题定义：找差异 → 拆结构 → 拆原因。
@@ -1606,13 +1759,27 @@ function HeroAsk({ me, onNeedLogin, onAuthed }) {
           else if (ev.type === "compact") patch(t => { t.compact = ev; });
           else if (ev.type === "error") patch(t => { t.err = ev.message; });
           else if (ev.type === "done") {
-            patch(t => { if (ev.answer && !t.content) t.content = ev.answer;
-                         if (ev.error) t.err = ev.error; });
+            patch(t => {
+              if (ev.answer && !t.content) t.content = ev.answer;
+              if (ev.error) t.err = ev.error;
+              /* ⚠️ 必须把**残留的 "run" 步骤收尾**。
+               *    steps 只在 `tool_result` 到达时才由 "run" → "ok"。
+               *    若最后一步工具调用没等到结果（中断 / 报错 / 迭代上限），
+               *    那个 "run" 会永远留着 → `running` 恒为真 →
+               *    **回答早已结束，却一直按"正在查阅"的纯文本样式显示**：
+               *    用户看到的是一堆 `##`、`|`、`**` 原文，而不是排好的 markdown。
+               *    收到 done 就说明本轮结束了，无论步骤是否都拿到结果。 */
+              t.steps.forEach(s => { if (s.state === "run") s.state = "ok"; });
+            });
             if (ev.guard) setMeta(x => ({ ...(x || {}), lastGuard: ev.guard }));
           }
         }
       }
     } catch (e) { patch(t => { t.err = String(e); }); }
+    /* 兜底：万一 `done` 事件没送到（连接中途断掉），这里也要把残留的
+     * "run" 收尾——否则那条消息会**永远**显示成"正在查阅"，正文永远
+     * 停在纯文本样式。宁可显示成已结束，也不要卡在假的"进行中"。 */
+    patch(t => t.steps.forEach(s => { if (s.state === "run") s.state = "bad"; }));
     setBusy(false);
   };
 
@@ -1665,6 +1832,8 @@ function HeroAsk({ me, onNeedLogin, onAuthed }) {
             if (m.role === "me") return html`
               <div class="bubble me" key=${i}><div class="txt">${m.content}</div></div>`;
             const running = m.steps.some(s => s.state === "run");
+            // 长回答才给导出。阈值见 MD_EXPORT_MIN_CHARS 的说明。
+            const canExport = !running && (m.content || "").length >= MD_EXPORT_MIN_CHARS;
             return html`
               <div class="bubble ai" key=${i}>
                 ${m.steps.length ? html`
@@ -1685,9 +1854,18 @@ function HeroAsk({ me, onNeedLogin, onAuthed }) {
                   </div>` : null}
                 ${m.compact ? html`<div class="compact-note">
                   为保持对话流畅，此前部分内容已归纳为摘要</div>` : null}
-                <div class=${"txt" + (!m.content && running ? " typing" : "")}>
-                  ${m.content || (running ? "正在查阅资料，请稍候…" : "")}
-                </div>
+                ${running
+                  ? html`<div class="txt typing">
+                      ${m.content || "正在查阅资料，请稍候…"}</div>`
+                  : html`<div class="txt md"
+                           dangerouslySetInnerHTML=${{ __html: markdownToHtml(m.content) }} />`}
+                ${canExport ? html`
+                  <div class="md-actions">
+                    <button class="md-export" title="把这条回答按原始 Markdown 存成本地 .md 文件"
+                            onClick=${() => downloadMarkdown(m.content, i)}>
+                      导出 .md
+                    </button>
+                  </div>` : null}
                 ${m.err ? html`<div class="alert" style=${{ marginTop: 10 }}>${m.err}</div>` : null}
               </div>`;
           })}

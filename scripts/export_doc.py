@@ -53,18 +53,50 @@ EXPORT_DIR = WIKI_ROOT / "exports"
 # 中文字体：用**字体名**而非路径 —— msyh.ttc 是 TTC 集合，
 # fontspec 走系统字体库比直接指路径稳。
 #
-# ⚠️ 字体名是**按平台不同**的，写死一个就会在另一个平台炸。
-#    原来写死 "Microsoft YaHei"（Windows 字体）——容器（Debian）里没有它，
-#    xelatex 会报 `The font "Microsoft YaHei" cannot be found`。
-#    而 chart_render.py 早就按候选路径列表跨平台处理了，这里一直是漏的。
+# ⚠️ 这里踩过一个真事故，教训比代码本身值钱：
 #
-# 可用 env `CJK_FONT` 覆盖（万一装了别的字体）。
-_CJK_FONT_CANDIDATES = {
-    "win32": "Microsoft YaHei",
-    "darwin": "PingFang SC",
-}
-CJK_FONT = os.getenv("CJK_FONT") or _CJK_FONT_CANDIDATES.get(
-    sys.platform, "Noto Sans CJK SC")   # Linux/容器默认：fonts-noto-cjk 装的就是它
+#   第一版按**平台**猜字体名（win32→Microsoft YaHei / 其它→Noto Sans CJK SC）。
+#   看起来合理，实际上**猜错了**：容器导出 docx 时写进的是
+#   `Noto Sans CJK SC`，而 Windows 上装的 Noto 中文家族叫 `Noto Sans SC`
+#   ——**名字对不上**。Word 找不到就静默回退到默认字体，
+#   于是"在容器里导出、拿回 Windows 打开"的文档字体全乱。
+#
+#   ⇒ **不要按平台猜字体名**。字体名是否有效，取决于**实际装了哪个字体**，
+#     跟平台没有必然关系：自定义镜像、精简版系统、Linux 桌面发行版，
+#     三种平台都可能装不同的名字。
+#
+#   正确做法（本函数）：**按真实字体文件探测**，探测不到再回退到名字表。
+#     ① env `CJK_FONT` 显式指定 → 最优先（部署时可强制）
+#     ② 按字体文件是否存在，映射到**该文件真实的家族名**
+#     ③ 都探不到 → 按平台给一个保守默认（至少名字是常见拼写）
+#
+#   为什么按"文件"而不是按"字体名"探测：字体名需要查询系统字体库
+#   （fontconfig / Windows GDI），而**文件路径**是确定的、无需依赖；
+#     msyh.ttc / NotoSansCJK-Regular.ttc 这些文件名在各平台是稳定的。
+_CJK_FONT_BY_FILE: List[Tuple[str, str]] = [
+    # (字体文件路径, 该文件真实的字体家族名)
+    ("C:/Windows/Fonts/msyh.ttc",                  "Microsoft YaHei"),
+    ("C:/Windows/Fonts/simhei.ttf",                "SimHei"),
+    ("C:/Windows/Fonts/NotoSansSC-VF.ttf",         "Noto Sans SC"),      # ← Windows 这版的名字
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                                                   "Noto Sans CJK SC"),  # ← Debian/容器这版的名字
+    ("/System/Library/Fonts/PingFang.ttc",         "PingFang SC"),
+]
+_CJK_FONT_FALLBACK = {"win32": "Microsoft YaHei", "darwin": "PingFang SC"}
+
+
+def _detect_cjk_font() -> str:
+    """探测本机**实际可用**的中文字体名（见上方事故说明）。"""
+    env = os.getenv("CJK_FONT")
+    if env:
+        return env
+    for path, family in _CJK_FONT_BY_FILE:
+        if Path(path).exists():
+            return family
+    return _CJK_FONT_FALLBACK.get(sys.platform, "Noto Sans CJK SC")
+
+
+CJK_FONT = _detect_cjk_font()
 
 # xeCJK 头文件 —— PDF 中文渲染的关键
 LATEX_HEADER = r"""

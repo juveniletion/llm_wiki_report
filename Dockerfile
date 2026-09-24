@@ -52,11 +52,43 @@ WORKDIR /app
 #
 # 代价：镜像约增大 1.5GB。这是"别人 clone 后 Word/PDF 导出开箱可用"的票价。
 # 要最小镜像就把这几行删掉——但那时导出功能不可用（其余功能不受影响）。
+# ⚠️ 拆成两层 + 加重试，是实测踩出来的，不是洁癖：
+#    texlive 那套约 1GB，**经代理下载会抖**——首次构建报
+#    `E: Unable to fetch some archives`（apt 默认不重试、超时也短）。
+#    拆层的好处：texlive 失败时，前面的字体/pandoc 已经缓存，不必重下。
+#    （实测容器里能连到本机代理 127.0.0.1:5479，所以不是代理不通，
+#      是"大文件 + 代理"下的超时抖动。）
+#
+# ---- 层 1：中文字体 + pandoc（小，~50MB）----
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        -o Acquire::Retries=8 \
+        -o Acquire::http::Timeout=90 \
+        -o Acquire::https::Timeout=90 \
         fonts-noto-cjk \
         pandoc \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- 层 2：LaTeX（大，~1GB，最易抖的就是它）----
+#
+# ⚠️ 这两个包都是**实测补上的**，不是可选项——pandoc 的默认 LaTeX 模板
+#    依赖它们，缺一个 PDF 就导不出来。两处报错都很"专业"，不看日志根本猜不到：
+#
+#    lmodern      模板开头就 `\usepackage{lmodern}`
+#                 → `! LaTeX Error: File `lmodern.sty' not found.`
+#    fonts-recommended  hyperref 要 zapfding 字体（`pzdr`）
+#                 → `! I can't find file `pzdr'.` → `! Emergency stop.`
+#
+#    ⚠️ 而 `texlive-xetex` / `texlive-latex-recommended` **都不含** lmodern——
+#       Debian 把它放在**独立的 `lmodern` 包**里（试过 fonts-recommended，里面没有）。
+#       `pzdr` 则确实在 fonts-recommended 里。两个都要。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        -o Acquire::Retries=8 \
+        -o Acquire::http::Timeout=90 \
+        -o Acquire::https::Timeout=90 \
         texlive-xetex \
         texlive-lang-chinese \
+        texlive-fonts-recommended \
+        lmodern \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- Python 依赖 ----

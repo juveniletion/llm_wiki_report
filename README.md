@@ -1,22 +1,41 @@
-# 基于 llm-wiki 的智能分析面板
+# 💊 PharmaCost-AI: 制药企业产品成本智能分析与报告系统
 
-赛题「基于 RAG + 大模型的制药企业产品成本智能分析报告系统」的完整实现。
+> 🏆 **2026年第二届重庆市AI大模型创新应用大赛企业出题赛项参赛作品**  
+> *基于「RAG 检索增强 + 多维成本归因 + 对标三步法 + RPA 整改闭环」的企业级智能财务分析工作台。*
 
-**核心主张**：大模型不该算数，它该写文章。
-凡可判定、可复算、可合规检查的逻辑全部由脚本承担；LLM 的职责被压缩到「写叙述」一个动作。
-
-⚠️ **赛题数据不随本仓库分发**（依据赛题保密条款，见 [`DATA_NOTICE.md`](DATA_NOTICE.md)）。
-规则：见 [`SKILL.md`](SKILL.md) | 词条骨架：见 [`references/词条骨架.md`](references/词条骨架.md)。
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python" alt="Python Version">
+  <img src="https://img.shields.io/badge/Framework-FastAPI%20%7C%20React%2018-green?logo=fastapi" alt="Framework">
+  <img src="https://img.shields.io/badge/LLM-DeepSeek%20%7C%20Qwen-orange" alt="LLM">
+  <img src="https://img.shields.io/badge/Architecture-llm--wiki%20%2B%20RAG-purple" alt="Architecture">
+  <img src="https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker" alt="Docker">
+  <img src="https://img.shields.io/badge/License-Apache%202.0-lightgrey" alt="License">
+</p>
 
 ---
 
-## 这个 wiki 是什么
+### 💡 核心设计哲学
+> **「大模型不该算数，它该写文章。」**  
+> 凡涉及精确统计、环比波动、结构拆解、合规校验等确定性计算，100% 由底层分析引擎硬编码复算；LLM 的核心职责严控于「深度因果推演、专业分析叙述与改进建议生成」，杜绝商业报告中的数据幻觉。
 
-一个**证据可查的知识库**。核心承诺只有一条：
+⚠️ **赛题数据不随本仓库分发**：依据赛题保密条款，出题方提供的原始敏感业务数据不进公开仓库，详见 [`DATA_NOTICE.md`](DATA_NOTICE.md)。  
+📚 **核心规则与约定**：规则见 [`SKILL.md`](SKILL.md) ｜ 词条骨架见 [`references/词条骨架.md`](references/词条骨架.md)。
 
-> `wiki/` 里每一个数字、日期、直接引语，都能在 `raw/` 中找到**坐标级**的出处。
+---
 
-它同时是报告生成 Agent 的**事实来源**——Agent 写报告时引用的每一个数字，都必须来自这里。
+## 🏛️ 系统核心四大模块
+
+- 📊 **单品成本看板与波动归因**：支持 6 个月历史趋势折线、瀑布图贡献度分解、环比变动（±10%）阈值告警。
+- 📑 **智能分析报告一键导出**：融合企业知识库与实时数据，动态解析 Word 模板，支持 Word / PDF 专业排版双格式导出。
+- ⚖️ **对标分析「三步法」引擎**：找差异 → 拆结构 → 拆原因，快速定位同集团多厂（中药一厂 vs 中药二厂）成本差异根因。
+- 🤖 **RPA 整改任务闭环**：异常归因直达行动，自动生成结构化任务 JSON 并对接模拟 RPA 与微信推送。
+
+---
+
+## 📖 llm-wiki 知识引擎架构
+
+本系统采用 **llm-wiki** 构建证据可查的制药行业专属知识库，核心承诺：
+> `wiki/` 里每一个数字、日期、直接引语，都能在 `raw/` 原始材料中找到**坐标级**出处，作为报告生成 Agent 可信事实的唯一来源。
 
 ## 目录结构
 
